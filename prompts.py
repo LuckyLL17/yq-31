@@ -81,8 +81,8 @@ def prompt_choice(message, choices, default_index=0):
         print(f"  ⚠️  请输入 1 到 {len(choices)} 之间的数字")
 
 
-def prompt_multi_select(message, options, min_selected=1):
-    selected_indices = set()
+def prompt_multi_select(message, options, min_selected=1, default_indices=None):
+    selected_indices = set(default_indices or [])
 
     while True:
         print(f"\n{message}")

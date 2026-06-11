@@ -36,26 +36,49 @@ class ConfigWizard:
     def __init__(self, config=None):
         self.config = config or get_default_config()
         self.available_fields = []
+        self.current_step = 0
+        self.total_steps = 0
+
+    def _next_step(self):
+        self.current_step += 1
 
     def run(self):
-        clear_screen()
-        print_title("JSON 转 Excel - 交互式配置向导")
-        print("\n欢迎使用配置向导！我们将引导您完成所有设置。\n")
+        while True:
+            clear_screen()
+            print_title("JSON 转 Excel - 交互式配置向导")
+            print("\n欢迎使用配置向导！我们将引导您完成所有设置。\n")
 
-        if prompt_confirm("是否加载已有配置文件？", default=True):
-            self.step_load_config()
+            self.current_step = 0
+            should_load_config = prompt_confirm("是否加载已有配置文件？", default=True)
+            self.total_steps = 6 + (1 if should_load_config else 0)
 
-        self.step_select_json_file()
-        self.step_detect_fields()
-        self.step_select_fields()
-        self.step_configure_column_widths()
-        self.step_configure_styles()
-        self.step_review_and_confirm()
+            if should_load_config:
+                self._next_step()
+                self.step_load_config()
+
+            self._next_step()
+            self.step_select_json_file()
+
+            self._next_step()
+            self.step_detect_fields()
+
+            self._next_step()
+            self.step_select_fields()
+
+            self._next_step()
+            self.step_configure_column_widths()
+
+            self._next_step()
+            self.step_configure_styles()
+
+            self._next_step()
+            if self.step_review_and_confirm():
+                break
 
         return self.config
 
     def step_load_config(self):
-        print_step(1, TOTAL_STEPS, "加载配置文件")
+        print_step(self.current_step, self.total_steps, "加载配置文件")
         config_path = prompt_file_path(
             "请输入配置文件路径",
             default="./config.json",
@@ -68,7 +91,7 @@ class ConfigWizard:
 
     def step_select_json_file(self):
         clear_screen()
-        print_step(2, TOTAL_STEPS, "选择 JSON 文件")
+        print_step(self.current_step, self.total_steps, "选择 JSON 文件")
 
         default_path = self.config.get("json_file_path", "./data/sample_data.json")
         json_path = prompt_file_path(
@@ -83,7 +106,7 @@ class ConfigWizard:
 
     def step_detect_fields(self):
         clear_screen()
-        print_step(3, TOTAL_STEPS, "检测数据字段")
+        print_step(self.current_step, self.total_steps, "检测数据字段")
 
         print("\n正在分析 JSON 数据结构...")
         try:
@@ -100,6 +123,8 @@ class ConfigWizard:
             if prompt_confirm("\n是否需要手动添加未检测到的字段？", default=False):
                 self._manual_add_fields()
 
+            self._merge_config_headers_to_available()
+
         except Exception as e:
             print(f"\n❌ 检测字段时出错: {e}")
             if not prompt_confirm("是否继续使用现有配置？", default=True):
@@ -109,29 +134,40 @@ class ConfigWizard:
 
     def step_select_fields(self):
         clear_screen()
-        print_step(4, TOTAL_STEPS, "选择需要导出的字段")
+        print_step(self.current_step, self.total_steps, "选择需要导出的字段")
 
         if not self.available_fields:
             print("\n⚠️  没有可用字段，使用默认配置")
             input("\n按回车继续...")
             return
 
-        options = [(h["key"], f"{h['label']} ({h['key']})") for h in self.available_fields]
+        config_header_keys = {h["key"] for h in self.config.get("default_headers", [])}
+        options = []
+        default_selected_indices = []
+        for idx, h in enumerate(self.available_fields):
+            options.append((h["key"], f"{h['label']} ({h['key']})"))
+            if h["key"] in config_header_keys:
+                default_selected_indices.append(idx)
 
         selected_keys = prompt_multi_select(
             "请选择要导出的字段",
             options,
             min_selected=1,
+            default_indices=default_selected_indices,
         )
 
         selected_headers = []
         for key in selected_keys:
             auto_h = next((h for h in self.available_fields if h["key"] == key), None)
             if auto_h:
+                config_h = next(
+                    (h for h in self.config.get("default_headers", []) if h["key"] == key),
+                    None
+                )
                 selected_headers.append({
                     "key": key,
-                    "label": auto_h["label"],
-                    "width": auto_h["width"],
+                    "label": config_h["label"] if config_h else auto_h["label"],
+                    "width": config_h["width"] if config_h else auto_h["width"],
                 })
 
         self.config["default_headers"] = selected_headers
@@ -145,7 +181,7 @@ class ConfigWizard:
 
     def step_configure_column_widths(self):
         clear_screen()
-        print_step(5, TOTAL_STEPS, "调整列宽和标签")
+        print_step(self.current_step, self.total_steps, "调整列宽和标签")
 
         headers = self.config.get("default_headers", [])
         if not headers:
@@ -195,14 +231,14 @@ class ConfigWizard:
             if choice != "done":
                 input("\n按回车继续...")
                 clear_screen()
-                print_step(5, TOTAL_STEPS, "调整列宽和标签")
+                print_step(self.current_step, self.total_steps, "调整列宽和标签")
 
         print("\n✅ 字段配置完成")
         input("\n按回车继续...")
 
     def step_configure_styles(self):
         clear_screen()
-        print_step(6, TOTAL_STEPS, "配置导出样式")
+        print_step(self.current_step, self.total_steps, "配置导出样式")
 
         self.config["sheet_name"] = prompt_input(
             "请输入工作表名称",
@@ -262,12 +298,14 @@ class ConfigWizard:
             for e in errors:
                 print(f"  • {e}")
             if not prompt_confirm("是否继续？", default=False):
-                return self.run()
+                return False
 
         save = prompt_confirm("\n是否保存配置到 config.json？", default=True)
         if save:
             save_path = save_config(self.config)
             print(f"\n✅ 配置已保存到: {save_path}")
+
+        return True
 
     def _get_sample_value(self, key):
         if not self.sample_data:
@@ -287,7 +325,27 @@ class ConfigWizard:
             label = prompt_input("请输入字段显示名称", default=key.replace("_", " ").title())
             width = prompt_number("请输入列宽", default=15, min_value=5, max_value=200)
             add_header(self.config, key, label, width)
+            existing = next((h for h in self.available_fields if h["key"] == key), None)
+            if existing:
+                existing["label"] = label
+                existing["width"] = width
+            else:
+                self.available_fields.append({
+                    "key": key,
+                    "label": label,
+                    "width": width,
+                })
             print(f"✅ 已添加字段: {label} ({key})")
+
+    def _merge_config_headers_to_available(self):
+        available_keys = {h["key"] for h in self.available_fields}
+        for config_header in self.config.get("default_headers", []):
+            if config_header["key"] not in available_keys:
+                self.available_fields.append({
+                    "key": config_header["key"],
+                    "label": config_header.get("label", config_header["key"]),
+                    "width": config_header.get("width", 15),
+                })
 
     def _modify_label(self, headers):
         idx = prompt_number("请选择要修改的字段序号", min_value=1, max_value=len(headers)) - 1
