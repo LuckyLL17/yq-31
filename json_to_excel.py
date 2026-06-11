@@ -1,30 +1,17 @@
 import json
 import os
+import sys
+import argparse
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from datetime import datetime
 
-
-CONFIG = {
-    "json_file_path": "./data/sample_data.json",
-    "excel_output_path": "./output/result.xlsx",
-    "sheet_name": "数据导出",
-    "default_headers": [
-        {"key": "id", "label": "ID", "width": 10},
-        {"key": "name", "label": "姓名", "width": 15},
-        {"key": "age", "label": "年龄", "width": 10},
-        {"key": "email", "label": "邮箱", "width": 30},
-        {"key": "phone", "label": "电话", "width": 18},
-        {"key": "address", "label": "地址", "width": 40},
-        {"key": "department", "label": "部门", "width": 15},
-        {"key": "position", "label": "职位", "width": 20},
-        {"key": "salary", "label": "薪资", "width": 12},
-        {"key": "join_date", "label": "入职日期", "width": 15},
-    ],
-    "auto_detect_headers": True,
-    "style_header": True,
-    "style_alt_rows": True,
-}
+from config_manager import (
+    load_config,
+    save_config,
+    get_default_config,
+    validate_config,
+)
 
 
 def load_json(file_path):
@@ -82,22 +69,39 @@ def auto_detect_headers(data):
     return headers
 
 
-def merge_headers(config_headers, auto_headers, data):
+def merge_headers(config_headers, auto_headers, config):
     if not config_headers:
         return auto_headers
 
     config_keys = {h["key"] for h in config_headers}
     extra_headers = [h for h in auto_headers if h["key"] not in config_keys]
 
-    if CONFIG["auto_detect_headers"] and extra_headers:
+    if config.get("auto_detect_headers", True) and extra_headers:
         return config_headers + extra_headers
     return config_headers
 
 
-def apply_header_style(ws, header_cells):
-    font = Font(bold=True, color="FFFFFF", size=12)
-    fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-    alignment = Alignment(horizontal="center", vertical="center")
+def _get_alignment(align_str):
+    align_map = {
+        "left": "left",
+        "center": "center",
+        "right": "right",
+    }
+    return align_map.get(align_str, "center")
+
+
+def apply_header_style(ws, header_cells, config):
+    header_style = config.get("header_style", {})
+
+    font_bold = header_style.get("font_bold", True)
+    font_color = header_style.get("font_color", "FFFFFF").replace("#", "")
+    font_size = header_style.get("font_size", 12)
+    bg_color = header_style.get("bg_color", "4472C4").replace("#", "")
+    alignment = _get_alignment(header_style.get("alignment", "center"))
+
+    font = Font(bold=font_bold, color=font_color, size=font_size)
+    fill = PatternFill(start_color=bg_color, end_color=bg_color, fill_type="solid")
+    alignment = Alignment(horizontal=alignment, vertical="center")
     thin_border = Border(
         left=Side(style="thin"),
         right=Side(style="thin"),
@@ -112,29 +116,42 @@ def apply_header_style(ws, header_cells):
         cell.border = thin_border
 
 
-def apply_data_style(ws, headers, data_rows_count):
-    alignment = Alignment(vertical="center", wrap_text=True)
+def apply_data_style(ws, headers, data_rows_count, config):
+    data_style = config.get("data_style", {})
+    wrap_text = data_style.get("wrap_text", True)
+    alt_row_color = data_style.get("alt_row_color", "F2F2F2").replace("#", "")
+
+    alignment = Alignment(vertical="center", wrap_text=wrap_text)
     thin_border = Border(
         left=Side(style="thin"),
         right=Side(style="thin"),
         top=Side(style="thin"),
         bottom=Side(style="thin"),
     )
-    alt_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    alt_fill = PatternFill(start_color=alt_row_color, end_color=alt_row_color, fill_type="solid")
 
     for row_idx in range(2, 2 + data_rows_count):
         for col_idx in range(1, len(headers) + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
             cell.alignment = alignment
             cell.border = thin_border
-            if CONFIG["style_alt_rows"] and row_idx % 2 == 0:
+            if config.get("style_alt_rows", True) and row_idx % 2 == 0:
                 cell.fill = alt_fill
 
 
 def set_column_widths(ws, headers):
     for idx, header in enumerate(headers, start=1):
         width = header.get("width", 15)
-        ws.column_dimensions[chr(64 + idx)].width = width
+        col_letter = chr(64 + idx) if idx <= 26 else _get_column_letter(idx)
+        ws.column_dimensions[col_letter].width = width
+
+
+def _get_column_letter(col_idx):
+    result = ""
+    while col_idx > 0:
+        col_idx, remainder = divmod(col_idx - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
 
 
 def extract_value(item, key):
@@ -160,7 +177,10 @@ def extract_value(item, key):
     return ""
 
 
-def export_to_excel(data, headers, output_path, sheet_name):
+def export_to_excel(data, headers, config):
+    output_path = config["excel_output_path"]
+    sheet_name = config.get("sheet_name", "数据导出")
+
     output_dir = os.path.dirname(output_path)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -180,11 +200,11 @@ def export_to_excel(data, headers, output_path, sheet_name):
 
     set_column_widths(ws, headers)
 
-    if CONFIG["style_header"]:
+    if config.get("style_header", True):
         header_cells = ws[1]
-        apply_header_style(ws, header_cells)
+        apply_header_style(ws, header_cells, config)
 
-    apply_data_style(ws, headers, len(data))
+    apply_data_style(ws, headers, len(data), config)
 
     ws.freeze_panes = "A2"
 
@@ -193,13 +213,55 @@ def export_to_excel(data, headers, output_path, sheet_name):
     print(f"共导出 {len(data)} 条数据，{len(headers)} 个字段")
 
 
-def main():
+def parse_args():
+    parser = argparse.ArgumentParser(description="JSON 转 Excel 工具")
+    parser.add_argument(
+        "-w", "--wizard",
+        action="store_true",
+        help="使用交互式配置向导",
+    )
+    parser.add_argument(
+        "-c", "--config",
+        type=str,
+        default=None,
+        help="指定配置文件路径（默认: ./config.json）",
+    )
+    parser.add_argument(
+        "-i", "--input",
+        type=str,
+        default=None,
+        help="指定输入 JSON 文件路径",
+    )
+    parser.add_argument(
+        "-o", "--output",
+        type=str,
+        default=None,
+        help="指定输出 Excel 文件路径",
+    )
+    parser.add_argument(
+        "--save-config",
+        type=str,
+        default=None,
+        help="将当前配置保存到指定文件",
+    )
+    return parser.parse_args()
+
+
+def apply_cli_overrides(config, args):
+    if args.input:
+        config["json_file_path"] = args.input
+    if args.output:
+        config["excel_output_path"] = args.output
+    return config
+
+
+def run_with_config(config):
     print("=" * 50)
     print("JSON 转 Excel 工具")
     print("=" * 50)
 
-    json_path = CONFIG["json_file_path"]
-    excel_path = CONFIG["excel_output_path"]
+    json_path = config["json_file_path"]
+    excel_path = config["excel_output_path"]
 
     print(f"JSON文件路径: {json_path}")
     print(f"Excel输出路径: {excel_path}")
@@ -212,27 +274,80 @@ def main():
         auto_headers = auto_detect_headers(data)
         print(f"自动检测到 {len(auto_headers)} 个字段")
 
-        headers = merge_headers(CONFIG["default_headers"], auto_headers, data)
+        headers = merge_headers(config.get("default_headers", []), auto_headers, config)
         print(f"最终使用 {len(headers)} 个字段")
         print()
 
         export_to_excel(
             data=data,
             headers=headers,
-            output_path=excel_path,
-            sheet_name=CONFIG["sheet_name"],
+            config=config,
         )
 
     except FileNotFoundError as e:
         print(f"错误: {e}")
-        print("请检查CONFIG中的json_file_path配置是否正确")
+        print("请检查JSON文件路径配置是否正确")
+        sys.exit(1)
     except json.JSONDecodeError as e:
         print(f"JSON解析错误: {e}")
         print("请检查JSON文件格式是否正确")
+        sys.exit(1)
     except Exception as e:
         print(f"发生错误: {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)
+
+
+def main():
+    args = parse_args()
+
+    if args.wizard:
+        from wizard import run_wizard
+        config = load_config(args.config) if args.config else get_default_config()
+        config = run_wizard(config)
+
+        errors = validate_config(config)
+        if errors:
+            print("\n❌ 配置验证失败:")
+            for e in errors:
+                print(f"  • {e}")
+            sys.exit(1)
+
+        if args.save_config:
+            save_config(config, args.save_config)
+            print(f"\n配置已保存到: {os.path.abspath(args.save_config)}")
+
+        if prompt_confirm_execute():
+            run_with_config(config)
+        return
+
+    config = load_config(args.config)
+    config = apply_cli_overrides(config, args)
+
+    errors = validate_config(config)
+    if errors:
+        print("❌ 配置验证失败:")
+        for e in errors:
+            print(f"  • {e}")
+        sys.exit(1)
+
+    if args.save_config:
+        save_config(config, args.save_config)
+        print(f"配置已保存到: {os.path.abspath(args.save_config)}")
+
+    run_with_config(config)
+
+
+def prompt_confirm_execute():
+    while True:
+        user_input = input("\n配置完成！是否立即执行导出？ (Y/n): ").strip().lower()
+        if not user_input or user_input in ("y", "yes"):
+            return True
+        if user_input in ("n", "no"):
+            print("配置已保存，您可以稍后运行 `python json_to_excel.py` 执行导出。")
+            return False
+        print("  ⚠️  请输入 y 或 n")
 
 
 if __name__ == "__main__":
