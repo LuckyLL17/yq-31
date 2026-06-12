@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import copy
 import argparse
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -221,6 +222,11 @@ def parse_args():
         help="使用交互式配置向导",
     )
     parser.add_argument(
+        "-p", "--preview",
+        action="store_true",
+        help="进入数据预览与筛选模式",
+    )
+    parser.add_argument(
         "-c", "--config",
         type=str,
         default=None,
@@ -255,7 +261,7 @@ def apply_cli_overrides(config, args):
     return config
 
 
-def run_with_config(config):
+def run_with_config(config, data=None):
     print("=" * 50)
     print("JSON 转 Excel 工具")
     print("=" * 50)
@@ -268,8 +274,11 @@ def run_with_config(config):
     print()
 
     try:
-        data = load_json(json_path)
-        print(f"已加载 {len(data)} 条数据")
+        if data is None:
+            data = load_json(json_path)
+            print(f"已加载 {len(data)} 条数据")
+        else:
+            print(f"使用筛选后的数据，共 {len(data)} 条")
 
         auto_headers = auto_detect_headers(data)
         print(f"自动检测到 {len(auto_headers)} 个字段")
@@ -319,11 +328,22 @@ def main():
             print(f"\n配置已保存到: {os.path.abspath(args.save_config)}")
 
         if prompt_confirm_execute():
-            run_with_config(config)
+            filtered_data = config.pop("_filtered_data", None)
+            run_with_config(config, data=filtered_data)
         return
 
     config = load_config(args.config)
     config = apply_cli_overrides(config, args)
+
+    if args.preview:
+        from data_previewer import start_preview_mode
+        result = start_preview_mode(config)
+        if result is not None and prompt_confirm_execute_after_preview():
+            export_config = copy.deepcopy(config)
+            auto_headers = auto_detect_headers(result)
+            headers = merge_headers(config.get("default_headers", []), auto_headers, config)
+            export_to_excel(data=result, headers=headers, config=export_config)
+        return
 
     errors = validate_config(config)
     if errors:
@@ -346,6 +366,16 @@ def prompt_confirm_execute():
             return True
         if user_input in ("n", "no"):
             print("配置已保存，您可以稍后运行 `python json_to_excel.py` 执行导出。")
+            return False
+        print("  ⚠️  请输入 y 或 n")
+
+
+def prompt_confirm_execute_after_preview():
+    while True:
+        user_input = input("\n预览完成！是否导出筛选后的数据到 Excel？ (Y/n): ").strip().lower()
+        if not user_input or user_input in ("y", "yes"):
+            return True
+        if user_input in ("n", "no"):
             return False
         print("  ⚠️  请输入 y 或 n")
 

@@ -300,6 +300,34 @@ class ConfigWizard:
             if not prompt_confirm("是否继续？", default=False):
                 return False
 
+        print("\n操作选项:")
+        print("  1. 预览并筛选数据")
+        print("  2. 直接保存配置并继续")
+        choice = prompt_choice(
+            "请选择操作",
+            [
+                ("preview", "预览并筛选数据"),
+                ("continue", "直接保存配置并继续"),
+            ],
+            default_index=1,
+        )
+
+        if choice == "preview":
+            try:
+                from data_previewer import run_data_preview
+                from json_to_excel import load_json
+                data = load_json(self.config["json_file_path"])
+                print(f"\n正在启动预览，共 {len(data)} 条数据...")
+                input("\n按回车继续...")
+                filtered = run_data_preview(data, self.config)
+                if filtered is not None and len(filtered) < len(data):
+                    if prompt_confirm(f"当前筛选后有 {len(filtered)} 条数据，是否使用筛选后的数据进行导出？", default=True):
+                        self.config["_filtered_data"] = filtered
+                        print(f"\n✅ 已设置使用筛选后的 {len(filtered)} 条数据")
+            except Exception as e:
+                print(f"\n⚠️  预览失败: {e}")
+                input("\n按回车继续...")
+
         save = prompt_confirm("\n是否保存配置到 config.json？", default=True)
         if save:
             save_path = save_config(self.config)
