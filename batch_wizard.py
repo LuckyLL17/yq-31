@@ -38,7 +38,7 @@ from batch_processor import BatchProcessor, resume_batch_process
 from report_generator import generate_report, generate_json_report, print_summary
 
 
-TOTAL_STEPS = 6
+TOTAL_STEPS = 7
 
 
 class BatchConfigWizard:
@@ -73,6 +73,9 @@ class BatchConfigWizard:
 
             self._next_step()
             self.step_config_style()
+
+            self._next_step()
+            self.step_config_split()
 
             self._next_step()
             self.step_config_options()
@@ -202,6 +205,79 @@ class BatchConfigWizard:
         print("\n✅ 样式配置完成")
         input("\n按回车继续...")
 
+    def step_config_split(self):
+        clear_screen()
+        print_step(self.current_step, self.total_steps, "配置 Excel 工作表拆分")
+
+        print("\n工作表拆分可以将数据按指定字段的值分组，分别导出到不同的工作表。")
+        print("例如：按 '部门' 字段拆分，每个部门自动生成一个独立的工作表。")
+
+        split_cfg = self.config.setdefault("split_config", {})
+
+        if not prompt_confirm("\n是否启用工作表拆分功能？", default=split_cfg.get("enabled", False)):
+            split_cfg["enabled"] = False
+            print("\n✅ 已禁用工作表拆分")
+            input("\n按回车继续...")
+            return
+
+        split_cfg["enabled"] = True
+
+        from wizard import ConfigWizard
+        dummy = ConfigWizard(self.config)
+        dummy.current_step = self.current_step
+        dummy.total_steps = self.total_steps
+        dummy.available_fields = []
+
+        split_cfg["split_field"] = prompt_input(
+            "\n请输入用于拆分的字段 key（例如: department, age, salary）",
+            default=split_cfg.get("split_field", ""),
+            required=True,
+        )
+
+        split_rule = prompt_choice(
+            "\n请选择拆分规则",
+            [
+                ("by_value", "按字段值拆分（每个不同值一个工作表，推荐）"),
+                ("by_range", "按数值范围分组（适合薪资、年龄等数值字段）"),
+                ("by_custom", "自定义规则分组（灵活组合多个条件）"),
+            ],
+            default_index=0 if split_cfg.get("split_rule", "by_value") == "by_value" else 0,
+        )
+        split_cfg["split_rule"] = split_rule
+
+        split_cfg["include_all_sheet"] = prompt_confirm(
+            "是否额外生成一个包含全部数据的汇总工作表？",
+            default=split_cfg.get("include_all_sheet", True),
+        )
+        if split_cfg["include_all_sheet"]:
+            split_cfg["all_sheet_name"] = prompt_input(
+                "汇总工作表名称",
+                default=split_cfg.get("all_sheet_name", "全部数据"),
+            )
+
+        split_cfg["empty_value_label"] = prompt_input(
+            "空值或未匹配数据的分组名称",
+            default=split_cfg.get("empty_value_label", "未分类"),
+        )
+
+        print("\n工作表命名模板可用占位符:")
+        print("  {value}  - 分组名称/值")
+        print("  {index}  - 分组序号（从1开始）")
+        print("  {num}    - 同 {index}")
+        print("  {count}  - 总组数")
+        split_cfg["sheet_name_template"] = prompt_input(
+            "工作表命名模板",
+            default=split_cfg.get("sheet_name_template", "{value}"),
+        )
+
+        if split_rule == "by_range":
+            dummy._config_split_range_groups(split_cfg)
+        elif split_rule == "by_custom":
+            dummy._config_split_custom_rules(split_cfg)
+
+        print("\n✅ 拆分配置完成")
+        input("\n按回车继续...")
+
     def step_config_options(self):
         clear_screen()
         print_step(self.current_step, self.total_steps, "配置批量选项")
@@ -253,6 +329,20 @@ class BatchConfigWizard:
         if self.options["generate_report"]:
             fmt_map = {"txt": "文本格式", "json": "JSON格式", "both": "两种格式"}
             print(f"  报告格式: {fmt_map.get(self.options['report_format'], '文本格式')}")
+
+        split_cfg = self.config.get("split_config", {})
+        if split_cfg.get("enabled"):
+            rule_label = {
+                "by_value": "按字段值",
+                "by_range": "按数值范围",
+                "by_custom": "自定义规则",
+            }.get(split_cfg.get("split_rule", "by_value"), split_cfg.get("split_rule", "by_value"))
+            print(f"  工作表拆分: 已启用（{rule_label}）")
+            print(f"    拆分字段: {split_cfg.get('split_field', '')}")
+            print(f"    Sheet命名: {split_cfg.get('sheet_name_template', '{value}')}")
+            print(f"    汇总Sheet: {'是' if split_cfg.get('include_all_sheet', True) else '否'}")
+        else:
+            print("  工作表拆分: 未启用")
 
         print("\n来源列表:")
         for i, src in enumerate(self.sources, 1):

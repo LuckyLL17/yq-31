@@ -39,7 +39,7 @@ from json_to_excel import load_json, auto_detect_headers, flatten_dict
 from multi_exporter import EXPORT_FORMATS, get_default_output_path
 
 
-TOTAL_STEPS = 8
+TOTAL_STEPS = 9
 
 
 class ConfigWizard:
@@ -60,7 +60,7 @@ class ConfigWizard:
 
             self.current_step = 0
             should_load_config = prompt_confirm("是否加载已有配置文件？", default=True)
-            self.total_steps = 8 + (1 if should_load_config else 0)
+            self.total_steps = 9 + (1 if should_load_config else 0)
 
             if should_load_config:
                 self._next_step()
@@ -83,6 +83,9 @@ class ConfigWizard:
 
             self._next_step()
             self.step_configure_styles()
+
+            self._next_step()
+            self.step_configure_split()
 
             self._next_step()
             self.step_select_export_format()
@@ -384,6 +387,384 @@ class ConfigWizard:
         print("\n✅ 配置完成")
         input("\n按回车继续...")
 
+    def step_configure_split(self):
+        clear_screen()
+        export_fmt = self.config.get("export_format", "excel")
+
+        if export_fmt != "excel":
+            print_step(self.current_step, self.total_steps, "配置 Excel 工作表拆分（跳过）")
+            print("\n⚠️  工作表拆分功能仅适用于 Excel 导出格式，当前格式已跳过此步骤。")
+            self.config.setdefault("split_config", {})["enabled"] = False
+            input("\n按回车继续...")
+            return
+
+        print_step(self.current_step, self.total_steps, "配置 Excel 工作表拆分")
+
+        split_cfg = self.config.setdefault("split_config", {})
+
+        print("\n工作表拆分可以将数据按指定字段的值分组，分别导出到不同的工作表。")
+        print("例如：按 '部门' 字段拆分，每个部门自动生成一个独立的工作表。")
+
+        if not prompt_confirm("\n是否启用工作表拆分功能？", default=split_cfg.get("enabled", False)):
+            split_cfg["enabled"] = False
+            print("\n✅ 已禁用工作表拆分")
+            input("\n按回车继续...")
+            return
+
+        split_cfg["enabled"] = True
+
+        field_options = []
+        if self.available_fields:
+            for h in self.available_fields:
+                field_options.append((h["key"], f"{h['label']} ({h['key']})"))
+        else:
+            for h in self.config.get("default_headers", []):
+                field_options.append((h["key"], f"{h['label']} ({h['key']})"))
+
+        if not field_options:
+            print("\n⚠️  没有可用的字段，请先配置导出字段")
+            split_cfg["enabled"] = False
+            input("\n按回车继续...")
+            return
+
+        default_field_idx = 0
+        current_field = split_cfg.get("split_field", "")
+        for i, (k, _) in enumerate(field_options):
+            if k == current_field:
+                default_field_idx = i
+                break
+
+        split_cfg["split_field"] = prompt_choice(
+            "\n请选择用于拆分的字段",
+            field_options,
+            default_index=default_field_idx,
+        )
+
+        split_rule = prompt_choice(
+            "\n请选择拆分规则",
+            [
+                ("by_value", "按字段值拆分（每个不同值一个工作表，推荐）"),
+                ("by_range", "按数值范围分组（适合薪资、年龄等数值字段）"),
+                ("by_custom", "自定义规则分组（灵活组合多个条件）"),
+            ],
+            default_index=0 if split_cfg.get("split_rule", "by_value") == "by_value" else 0,
+        )
+        split_cfg["split_rule"] = split_rule
+
+        split_cfg["include_all_sheet"] = prompt_confirm(
+            "是否额外生成一个包含全部数据的汇总工作表？",
+            default=split_cfg.get("include_all_sheet", True),
+        )
+        if split_cfg["include_all_sheet"]:
+            split_cfg["all_sheet_name"] = prompt_input(
+                "汇总工作表名称",
+                default=split_cfg.get("all_sheet_name", "全部数据"),
+            )
+
+        split_cfg["empty_value_label"] = prompt_input(
+            "空值或未匹配数据的分组名称",
+            default=split_cfg.get("empty_value_label", "未分类"),
+        )
+
+        print("\n工作表命名模板可用占位符:")
+        print("  {value}  - 分组名称/值")
+        print("  {index}  - 分组序号（从1开始）")
+        print("  {num}    - 同 {index}")
+        print("  {count}  - 总组数")
+        split_cfg["sheet_name_template"] = prompt_input(
+            "工作表命名模板",
+            default=split_cfg.get("sheet_name_template", "{value}"),
+        )
+
+        if split_rule == "by_range":
+            self._config_split_range_groups(split_cfg)
+        elif split_rule == "by_custom":
+            self._config_split_custom_rules(split_cfg)
+
+        print("\n✅ 拆分配置完成")
+        input("\n按回车继续...")
+
+    def _config_split_range_groups(self, split_cfg):
+        print("\n配置数值范围分组:")
+        print("  每个分组需要设置名称、最小值和最大值。")
+        print("  例如: 名称='青年', min=0, max=30  表示年龄 0~30 岁")
+
+        existing = split_cfg.get("range_groups", [])
+        if not existing:
+            existing = [
+                {"name": "低", "min": None, "max": 1000, "include_min": True, "include_max": False},
+                {"name": "中", "min": 1000, "max": 5000, "include_min": True, "include_max": False},
+                {"name": "高", "min": 5000, "max": None, "include_min": True, "include_max": False},
+            ]
+
+        while True:
+            clear_screen()
+            print_step(self.current_step, self.total_steps, "配置数值范围分组")
+
+            if existing:
+                print(f"\n当前已配置 {len(existing)} 个范围分组:")
+                for i, g in enumerate(existing, 1):
+                    min_str = f"{g.get('min', '-∞')}"
+                    max_str = f"{g.get('max', '+∞')}"
+                    left_b = "[" if g.get("include_min", True) else "("
+                    right_b = "]" if g.get("include_max", False) else ")"
+                    print(f"  {i}. {g['name']:20s}  范围: {left_b}{min_str}, {max_str}{right_b}")
+            else:
+                print("\n当前未配置任何范围分组")
+
+            print("\n操作选项:")
+            print("  1. 添加分组")
+            print("  2. 修改分组")
+            print("  3. 删除分组")
+            print("  4. 使用示例分组（低/中/高）")
+            print("  0. 完成配置")
+
+            choice = prompt_number(
+                "\n请选择操作",
+                min_value=0,
+                max_value=4,
+                default=0,
+            )
+
+            if choice == 0:
+                if not existing:
+                    print("  ⚠️  至少需要配置一个分组")
+                    input("\n按回车继续...")
+                    continue
+                break
+            elif choice == 1:
+                group = self._prompt_range_group()
+                if group:
+                    existing.append(group)
+                    print(f"  ✅ 已添加分组: {group['name']}")
+            elif choice == 2:
+                if not existing:
+                    print("  ⚠️  没有可修改的分组")
+                else:
+                    idx = prompt_number("请选择要修改的分组序号", min_value=1, max_value=len(existing)) - 1
+                    group = self._prompt_range_group(existing[idx])
+                    if group:
+                        existing[idx] = group
+                        print(f"  ✅ 已更新分组: {group['name']}")
+            elif choice == 3:
+                if not existing:
+                    print("  ⚠️  没有可删除的分组")
+                else:
+                    idx = prompt_number("请选择要删除的分组序号", min_value=1, max_value=len(existing)) - 1
+                    name = existing[idx]["name"]
+                    if prompt_confirm(f"确定删除分组 '{name}' 吗？", default=False):
+                        existing.pop(idx)
+                        print(f"  ✅ 已删除分组: {name}")
+            elif choice == 4:
+                existing = [
+                    {"name": "低", "min": None, "max": 1000, "include_min": True, "include_max": False},
+                    {"name": "中", "min": 1000, "max": 5000, "include_min": True, "include_max": False},
+                    {"name": "高", "min": 5000, "max": None, "include_min": True, "include_max": False},
+                ]
+                print("  ✅ 已使用示例分组")
+
+            if choice != 0:
+                input("\n按回车继续...")
+
+        split_cfg["range_groups"] = existing
+
+    def _prompt_range_group(self, existing=None):
+        existing = existing or {}
+        print("\n配置范围分组:")
+
+        name = prompt_input(
+            "分组名称",
+            default=existing.get("name", ""),
+        )
+
+        min_str = prompt_input(
+            "最小值（留空表示无下限）",
+            default=str(existing.get("min", "")) if existing.get("min") is not None else "",
+            required=False,
+        )
+        min_val = float(min_str) if min_str else None
+
+        max_str = prompt_input(
+            "最大值（留空表示无上限）",
+            default=str(existing.get("max", "")) if existing.get("max") is not None else "",
+            required=False,
+        )
+        max_val = float(max_str) if max_str else None
+
+        include_min = prompt_confirm(
+            "是否包含最小值？（即 >= min）",
+            default=existing.get("include_min", True),
+        )
+        include_max = prompt_confirm(
+            "是否包含最大值？（即 <= max）",
+            default=existing.get("include_max", False),
+        )
+
+        if min_val is None and max_val is None:
+            print("  ⚠️  最小值和最大值不能同时为空")
+            return None
+
+        return {
+            "name": name,
+            "min": min_val,
+            "max": max_val,
+            "include_min": include_min,
+            "include_max": include_max,
+        }
+
+    def _config_split_custom_rules(self, split_cfg):
+        print("\n配置自定义分组规则:")
+        print("  支持三种匹配方式:")
+        print("    1. 指定值列表 - 例如 values: ['技术部', '产品部']")
+        print("    2. 数值区间   - 例如 min: 20, max: 30")
+        print("    3. 条件表达式 - 例如 condition: 'value and len(str(value)) > 5'")
+
+        existing = split_cfg.get("custom_rules", [])
+        if not existing:
+            existing = []
+
+        while True:
+            clear_screen()
+            print_step(self.current_step, self.total_steps, "配置自定义分组规则")
+
+            if existing:
+                print(f"\n当前已配置 {len(existing)} 条自定义规则:")
+                for i, rule in enumerate(existing, 1):
+                    desc = self._describe_custom_rule(rule)
+                    print(f"  {i}. {rule['name']:20s}  条件: {desc}")
+            else:
+                print("\n当前未配置任何自定义规则")
+
+            print("\n操作选项:")
+            print("  1. 添加规则（值列表方式）")
+            print("  2. 添加规则（数值区间方式）")
+            print("  3. 添加规则（表达式方式）")
+            print("  4. 删除规则")
+            print("  0. 完成配置")
+
+            choice = prompt_number(
+                "\n请选择操作",
+                min_value=0,
+                max_value=4,
+                default=0,
+            )
+
+            if choice == 0:
+                if not existing:
+                    print("  ⚠️  至少需要配置一条规则")
+                    input("\n按回车继续...")
+                    continue
+                break
+            elif choice == 1:
+                rule = self._prompt_custom_values_rule()
+                if rule:
+                    existing.append(rule)
+                    print(f"  ✅ 已添加规则: {rule['name']}")
+            elif choice == 2:
+                rule = self._prompt_custom_range_rule()
+                if rule:
+                    existing.append(rule)
+                    print(f"  ✅ 已添加规则: {rule['name']}")
+            elif choice == 3:
+                rule = self._prompt_custom_expr_rule()
+                if rule:
+                    existing.append(rule)
+                    print(f"  ✅ 已添加规则: {rule['name']}")
+            elif choice == 4:
+                if not existing:
+                    print("  ⚠️  没有可删除的规则")
+                else:
+                    idx = prompt_number("请选择要删除的规则序号", min_value=1, max_value=len(existing)) - 1
+                    name = existing[idx]["name"]
+                    if prompt_confirm(f"确定删除规则 '{name}' 吗？", default=False):
+                        existing.pop(idx)
+                        print(f"  ✅ 已删除规则: {name}")
+
+            if choice != 0:
+                input("\n按回车继续...")
+
+        split_cfg["custom_rules"] = existing
+
+        split_cfg["fallback_group_name"] = prompt_input(
+            "\n未匹配任何规则的数据归入的分组名",
+            default=split_cfg.get("fallback_group_name", split_cfg.get("empty_value_label", "其他")),
+        )
+
+    def _describe_custom_rule(self, rule):
+        if "values" in rule:
+            vals = rule["values"]
+            if isinstance(vals, list):
+                return f"值在 [{', '.join(str(v) for v in vals)}]"
+            return f"值等于 {vals}"
+        if "min" in rule or "max" in rule:
+            parts = []
+            if rule.get("min") is not None:
+                op = ">=" if rule.get("include_min", True) else ">"
+                parts.append(f"{op} {rule['min']}")
+            if rule.get("max") is not None:
+                op = "<=" if rule.get("include_max", False) else "<"
+                parts.append(f"{op} {rule['max']}")
+            return " 且 ".join(parts) if parts else "任意"
+        if "condition" in rule:
+            return f"表达式: {rule['condition']}"
+        return "未知条件"
+
+    def _prompt_custom_values_rule(self):
+        print("\n添加值列表匹配规则:")
+        name = prompt_input("分组名称", required=True)
+        values_str = prompt_input(
+            "输入匹配的值（多个值用逗号分隔，例如: 技术部,产品部,设计部）",
+            required=True,
+        )
+        values = [v.strip() for v in values_str.split(",") if v.strip()]
+        if not values:
+            print("  ⚠️  至少需要输入一个值")
+            return None
+        return {"name": name, "values": values}
+
+    def _prompt_custom_range_rule(self):
+        print("\n添加数值区间匹配规则:")
+        name = prompt_input("分组名称", required=True)
+
+        min_str = prompt_input("最小值（留空表示无下限）", required=False)
+        min_val = float(min_str) if min_str else None
+
+        max_str = prompt_input("最大值（留空表示无上限）", required=False)
+        max_val = float(max_str) if max_str else None
+
+        if min_val is None and max_val is None:
+            print("  ⚠️  最小值和最大值不能同时为空")
+            return None
+
+        include_min = True
+        include_max = False
+        if min_val is not None:
+            include_min = prompt_confirm("是否包含最小值？(>= min)", default=True)
+        if max_val is not None:
+            include_max = prompt_confirm("是否包含最大值？(<= max)", default=False)
+
+        return {
+            "name": name,
+            "min": min_val,
+            "max": max_val,
+            "include_min": include_min,
+            "include_max": include_max,
+        }
+
+    def _prompt_custom_expr_rule(self):
+        print("\n添加表达式匹配规则:")
+        print("  使用 'value' 代表当前字段值，例如:")
+        print("    value.startswith('A')    - 值以 A 开头")
+        print("    len(str(value)) > 10     - 值的长度大于10")
+        print("    value in ['X','Y']       - 值是 X 或 Y")
+
+        name = prompt_input("分组名称", required=True)
+        condition = prompt_input(
+            "Python 表达式（使用 value 变量）",
+            required=True,
+        )
+        return {"name": name, "condition": condition}
+
     def _config_general_title(self):
         for cfg_key in ["html_config", "markdown_config", "pdf_config"]:
             cfg = self.config.setdefault(cfg_key, {})
@@ -674,6 +1055,20 @@ class ConfigWizard:
             print(f"  工作表名: {self.config['sheet_name']}")
             print(f"  表头样式: {'启用' if self.config['style_header'] else '禁用'}")
             print(f"  隔行变色: {'启用' if self.config['style_alt_rows'] else '禁用'}")
+
+            split_cfg = self.config.get("split_config", {})
+            if split_cfg.get("enabled"):
+                rule_label = {
+                    "by_value": "按字段值",
+                    "by_range": "按数值范围",
+                    "by_custom": "自定义规则",
+                }.get(split_cfg.get("split_rule", "by_value"), split_cfg.get("split_rule", "by_value"))
+                print(f"  工作表拆分: 已启用（{rule_label}）")
+                print(f"    拆分字段: {split_cfg.get('split_field', '')}")
+                print(f"    Sheet命名: {split_cfg.get('sheet_name_template', '{value}')}")
+                print(f"    汇总Sheet: {'是' if split_cfg.get('include_all_sheet', True) else '否'}")
+            else:
+                print("  工作表拆分: 未启用")
 
         validation_rules = self.config.get("validation_rules", [])
         if validation_rules:
