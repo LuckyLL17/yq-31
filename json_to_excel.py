@@ -340,6 +340,8 @@ def run_with_config(config, data=None):
             config=config,
         )
 
+        prompt_save_as_template(config)
+
     except FileNotFoundError as e:
         print(f"错误: {e}")
         print("请检查JSON文件路径配置是否正确")
@@ -353,6 +355,30 @@ def run_with_config(config, data=None):
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
+def prompt_save_as_template(config):
+    from prompts import prompt_confirm, prompt_input
+    from style_template_manager import create_template_from_config
+
+    if not prompt_confirm("\n是否将当前样式保存为自定义模板？", default=False):
+        return
+
+    template_id = prompt_input("请输入模板ID (英文标识，如 'my_style')", required=True)
+    name = prompt_input("请输入模板名称", required=True)
+    description = prompt_input("请输入模板描述", required=False, default="")
+
+    success, msg = create_template_from_config(
+        template_id, name, description, config, overwrite=False
+    )
+
+    if not success and "已存在" in msg:
+        if prompt_confirm(f"模板 '{template_id}' 已存在，是否覆盖？", default=False):
+            success, msg = create_template_from_config(
+                template_id, name, description, config, overwrite=True
+            )
+
+    print(f"\n{msg}")
 
 
 def handle_template_operations(args, config):
@@ -455,6 +481,7 @@ def main():
             auto_headers = auto_detect_headers(result)
             headers = merge_headers(config.get("default_headers", []), auto_headers, config)
             export_to_excel(data=result, headers=headers, config=export_config)
+            prompt_save_as_template(export_config)
         return
 
     errors = validate_config(config)
@@ -476,6 +503,7 @@ def main():
             auto_headers = auto_detect_headers(result)
             headers = merge_headers(config.get("default_headers", []), auto_headers, config)
             export_to_excel(data=result, headers=headers, config=export_config)
+            prompt_save_as_template(export_config)
         return
 
     run_with_config(config)

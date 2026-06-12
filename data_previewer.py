@@ -407,7 +407,7 @@ def _preview_top_n(previewer):
 
 
 def _export_filtered(previewer, config):
-    from json_to_excel import export_to_excel, merge_headers
+    from json_to_excel import export_to_excel, merge_headers, prompt_save_as_template
 
     clear_screen()
     print_title("导出筛选后的数据")
@@ -432,6 +432,7 @@ def _export_filtered(previewer, config):
             config=export_config,
         )
         print(f"\n✅ 已导出 {len(previewer.filtered_data)} 条数据到: {os.path.abspath(output_path)}")
+        prompt_save_as_template(export_config)
     except Exception as e:
         print(f"\n❌ 导出失败: {e}")
 
