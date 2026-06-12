@@ -38,7 +38,7 @@ from style_template_manager import (
 from json_to_excel import load_json, auto_detect_headers, flatten_dict
 
 
-TOTAL_STEPS = 6
+TOTAL_STEPS = 7
 
 
 class ConfigWizard:
@@ -59,7 +59,7 @@ class ConfigWizard:
 
             self.current_step = 0
             should_load_config = prompt_confirm("是否加载已有配置文件？", default=True)
-            self.total_steps = 6 + (1 if should_load_config else 0)
+            self.total_steps = 7 + (1 if should_load_config else 0)
 
             if should_load_config:
                 self._next_step()
@@ -76,6 +76,9 @@ class ConfigWizard:
 
             self._next_step()
             self.step_configure_column_widths()
+
+            self._next_step()
+            self.step_configure_validation()
 
             self._next_step()
             self.step_configure_styles()
@@ -341,6 +344,28 @@ class ConfigWizard:
 
         print(f"\n{msg}")
 
+    def step_configure_validation(self):
+        clear_screen()
+        print_step(self.current_step, self.total_steps, "配置数据校验规则")
+
+        existing_rules = self.config.get("validation_rules", [])
+        if existing_rules:
+            print(f"\n当前已配置 {len(existing_rules)} 条校验规则:")
+            for i, rule in enumerate(existing_rules, 1):
+                from data_validator import VALIDATION_TYPE_LABELS, ON_FAIL_LABELS
+                type_label = VALIDATION_TYPE_LABELS.get(rule.get("rule_type", ""), rule.get("rule_type", ""))
+                on_fail_label = ON_FAIL_LABELS.get(rule.get("on_fail", ""), "").split("（")[0]
+                print(f"  {i}. [{type_label}] {rule.get('field', '')} → {on_fail_label}: {rule.get('message', '')}")
+        else:
+            print("\n当前未配置任何校验规则")
+
+        if prompt_confirm("\n是否配置数据校验规则？", default=False):
+            from validation_wizard import run_validation_wizard
+            self.config = run_validation_wizard(self.config, available_fields=self.available_fields)
+
+        print("\n✅ 校验规则配置完成")
+        input("\n按回车继续...")
+
     def step_configure_styles(self):
         clear_screen()
         print_step(self.current_step, self.total_steps, "配置导出样式")
@@ -414,6 +439,12 @@ class ConfigWizard:
         print(f"  自动检测新字段: {'是' if self.config['auto_detect_headers'] else '否'}")
         print(f"  表头样式: {'启用' if self.config['style_header'] else '禁用'}")
         print(f"  隔行变色: {'启用' if self.config['style_alt_rows'] else '禁用'}")
+
+        validation_rules = self.config.get("validation_rules", [])
+        if validation_rules:
+            print(f"  数据校验: {len(validation_rules)} 条规则")
+        else:
+            print("  数据校验: 未配置")
 
         print("\n详细字段列表:")
         for h in self.config["default_headers"]:

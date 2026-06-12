@@ -5,6 +5,7 @@ import copy
 import argparse
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.comments import Comment
 from datetime import datetime
 
 from config_manager import (
@@ -12,6 +13,17 @@ from config_manager import (
     save_config,
     get_default_config,
     validate_config,
+)
+from data_validator import (
+    ValidationRule,
+    validate_data,
+    apply_validation_to_export,
+    rules_from_config,
+    ON_FAIL_MARK,
+    ON_FAIL_ABORT,
+    MARK_COLOR,
+    MARK_BG_COLOR,
+    ON_FAIL_LABELS,
 )
 
 
@@ -199,6 +211,37 @@ def export_to_excel(data, headers, config):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
+    rules = rules_from_config(config)
+    validation_result = None
+    original_data = data
+    original_indices = list(range(len(data)))
+
+    if rules:
+        print(f"\n正在执行数据校验（{len(rules)} 条规则）...")
+        validation_result = validate_data(data, rules)
+        print(validation_result.summary())
+
+        if validation_result.aborted:
+            print(f"\n❌ 校验中止，导出已取消: {validation_result.abort_reason}")
+            _print_validation_errors(validation_result, data, max_display=10)
+            return
+
+        if validation_result.skipped_rows:
+            print(f"  将跳过 {len(validation_result.skipped_rows)} 行校验不通过的数据")
+
+        valid_data, removed = apply_validation_to_export(data, validation_result, headers)
+        if valid_data is None:
+            print("\n❌ 校验中止，导出已取消")
+            return
+
+        new_indices = []
+        for idx in range(len(data)):
+            if idx not in validation_result.skipped_rows:
+                new_indices.append(idx)
+        original_indices = new_indices
+        data = valid_data
+        print(f"  校验后有效数据: {len(data)} 条\n")
+
     wb = Workbook()
     ws = wb.active
     ws.title = sheet_name
@@ -220,11 +263,76 @@ def export_to_excel(data, headers, config):
 
     apply_data_style(ws, headers, len(data), config)
 
+    if validation_result and validation_result.marked_rows:
+        _apply_validation_marks(ws, validation_result, headers, original_indices)
+
     ws.freeze_panes = "A2"
 
     wb.save(output_path)
     print(f"Excel文件已成功导出: {os.path.abspath(output_path)}")
-    print(f"共导出 {len(data)} 条数据，{len(headers)} 个字段")
+    if validation_result:
+        skipped_count = len(validation_result.skipped_rows)
+        marked_count = len(validation_result.marked_rows)
+        print(f"共导出 {len(data)} 条数据，{len(headers)} 个字段", end="")
+        if skipped_count > 0:
+            print(f"，跳过 {skipped_count} 条", end="")
+        if marked_count > 0:
+            print(f"，标记 {marked_count} 条", end="")
+        print()
+    else:
+        print(f"共导出 {len(data)} 条数据，{len(headers)} 个字段")
+
+
+def _apply_validation_marks(ws, validation_result, headers, original_indices):
+    mark_font = Font(color=MARK_COLOR, bold=True)
+    mark_fill = PatternFill(start_color=MARK_BG_COLOR, end_color=MARK_BG_COLOR, fill_type="solid")
+
+    header_key_to_col = {}
+    for col_idx, header in enumerate(headers, start=1):
+        header_key_to_col[header["key"]] = col_idx
+
+    marked_in_export = set()
+    for orig_idx in validation_result.marked_rows:
+        if orig_idx in original_indices:
+            export_row = original_indices.index(orig_idx) + 2
+            marked_in_export.add(export_row)
+
+            row_errors = validation_result.get_field_errors_for_row(orig_idx)
+            error_msgs = []
+            for field_key, errors in row_errors.items():
+                for e in errors:
+                    error_msgs.append(e.rule.message)
+
+            comment_text = "; ".join(error_msgs)
+            if len(comment_text) > 200:
+                comment_text = comment_text[:200] + "..."
+
+            for col_idx in range(1, len(headers) + 1):
+                cell = ws.cell(row=export_row, column=col_idx)
+                cell.font = mark_font
+                cell.fill = mark_fill
+
+            first_cell = ws.cell(row=export_row, column=1)
+            first_cell.comment = Comment(comment_text, "数据校验")
+
+            for field_key, errors in row_errors.items():
+                if field_key in header_key_to_col:
+                    col_idx = header_key_to_col[field_key]
+                    cell = ws.cell(row=export_row, column=col_idx)
+                    cell.fill = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
+
+
+def _print_validation_errors(validation_result, data, max_display=10):
+    errors = validation_result.errors[:max_display]
+    if not errors:
+        return
+    print("\n校验错误详情:")
+    for e in errors:
+        val_str = str(e.value)[:30] if e.value is not None else "(空)"
+        on_fail_str = ON_FAIL_LABELS.get(e.rule.on_fail, "").split("（")[0]
+        print(f"  行 {e.row_index + 1}: {e.rule.message} | 值: {val_str} | 处理: {on_fail_str}")
+    if len(validation_result.errors) > max_display:
+        print(f"  ... 还有 {len(validation_result.errors) - max_display} 个问题未显示")
 
 
 def parse_args():
@@ -348,6 +456,16 @@ def parse_args():
         "--batch-skip-existing",
         action="store_true",
         help="批量处理：跳过已存在的Excel文件",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="启动交互式数据校验规则配置",
+    )
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="仅执行数据校验，不导出Excel",
     )
     return parser.parse_args()
 
@@ -591,6 +709,37 @@ def main():
     args = parse_args()
 
     if _handle_batch_operations(args):
+        return
+
+    if args.validate:
+        from validation_wizard import run_validation_wizard
+        config = load_config(args.config) if args.config else get_default_config()
+        try:
+            data = load_json(config["json_file_path"])
+            auto_headers = auto_detect_headers(data)
+            config = run_validation_wizard(config, available_fields=auto_headers)
+        except Exception:
+            config = run_validation_wizard(config)
+        if args.save_config:
+            save_config(config, args.save_config)
+            print(f"\n配置已保存到: {os.path.abspath(args.save_config)}")
+        return
+
+    if args.validate_only:
+        config = load_config(args.config) if args.config else get_default_config()
+        config = apply_cli_overrides(config, args)
+        rules = rules_from_config(config)
+        if not rules:
+            print("未配置任何校验规则，请先使用 --validate 配置规则")
+            return
+        try:
+            data = load_json(config["json_file_path"])
+            print(f"已加载 {len(data)} 条数据，正在执行校验...")
+            result = validate_data(data, rules)
+            print(f"\n{result.summary()}")
+            _print_validation_errors(result, data)
+        except Exception as e:
+            print(f"校验执行失败: {e}")
         return
 
     if args.wizard:

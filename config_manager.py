@@ -44,6 +44,8 @@ DEFAULT_CONFIG = {
         "border_style": "thin",
         "border_color": "#000000",
     },
+    "validation_rules": [],
+    "validation_on_fail_default": "mark",
 }
 
 CONFIG_FILE_PATH = "./config.json"
@@ -110,6 +112,24 @@ def validate_config(config):
                 continue
             if "key" not in header:
                 errors.append(f"第 {i + 1} 个字段缺少 key 属性")
+
+    validation_rules = config.get("validation_rules", [])
+    if not isinstance(validation_rules, list):
+        errors.append("校验规则格式错误，应为列表")
+    else:
+        valid_types = {"not_null", "format", "range", "regex"}
+        valid_actions = {"mark", "skip", "abort"}
+        for i, rule in enumerate(validation_rules):
+            if not isinstance(rule, dict):
+                errors.append(f"第 {i + 1} 条校验规则格式错误")
+                continue
+            if "field" not in rule or not rule["field"]:
+                errors.append(f"第 {i + 1} 条校验规则缺少 field 属性")
+            if "rule_type" not in rule or rule["rule_type"] not in valid_types:
+                errors.append(f"第 {i + 1} 条校验规则类型无效，应为 {', '.join(valid_types)}")
+            on_fail = rule.get("on_fail", "mark")
+            if on_fail not in valid_actions:
+                errors.append(f"第 {i + 1} 条校验规则处理方式无效，应为 {', '.join(valid_actions)}")
 
     return errors
 

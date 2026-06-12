@@ -6,6 +6,12 @@ from datetime import datetime
 
 from json_to_excel import load_json, auto_detect_headers, flatten_dict, extract_value
 from prompts import clear_screen, print_title, prompt_input, prompt_choice, prompt_number, prompt_confirm
+from data_validator import (
+    validate_data,
+    rules_from_config,
+    ON_FAIL_LABELS,
+    VALIDATION_TYPE_LABELS,
+)
 
 
 class FilterCondition:
@@ -236,6 +242,7 @@ def _print_menu():
     print("  │  r / remove  移除筛选条件                              │")
     print("  │  c / clear   清除所有筛选条件                          │")
     print("  │  ─────────────────────────────────────────────────   │")
+    print("  │  v / valid   执行数据校验                              │")
     print("  │  s / show    选择显示字段                              │")
     print("  │  a / all     查看原始完整数据（前N条）                 │")
     print("  │  ─────────────────────────────────────────────────   │")
@@ -439,6 +446,48 @@ def _export_filtered(previewer, config):
     input("\n按回车继续...")
 
 
+def _run_validation(previewer, config):
+    clear_screen()
+    print_title("数据校验")
+
+    rules = rules_from_config(config)
+    if not rules:
+        print("\n  当前未配置任何校验规则")
+        if prompt_confirm("是否现在配置校验规则？", default=True):
+            from validation_wizard import run_validation_wizard
+            config = run_validation_wizard(config, available_fields=previewer.headers)
+            rules = rules_from_config(config)
+        if not rules:
+            print("\n  未配置校验规则，跳过校验")
+            input("\n按回车继续...")
+            return
+
+    print(f"\n正在对 {len(previewer.filtered_data)} 条数据执行 {len(rules)} 条校验规则...")
+    result = validate_data(previewer.filtered_data, rules)
+
+    print(f"\n{result.summary()}")
+
+    if result.has_errors:
+        print("\n校验错误详情 (最多显示 30 条):")
+        for i, error in enumerate(result.errors[:30]):
+            val_str = str(error.value)[:30] if error.value is not None else "(空)"
+            on_fail_str = ON_FAIL_LABELS.get(error.rule.on_fail, "").split("（")[0]
+            print(f"  行 {error.row_index + 1}: {error.rule.message} | 值: {val_str} | 处理: {on_fail_str}")
+        if len(result.errors) > 30:
+            print(f"  ... 还有 {len(result.errors) - 30} 个问题未显示")
+
+        if result.aborted:
+            print("\n  ⚠️  存在校验中止规则，导出时将停止")
+        if result.skipped_rows:
+            print(f"\n  ℹ️  {len(result.skipped_rows)} 行将在导出时被跳过")
+        if result.marked_rows:
+            print(f"\n  ℹ️  {len(result.marked_rows)} 行将在导出时被标记高亮")
+    else:
+        print("\n  ✅ 所有数据均通过校验")
+
+    input("\n按回车继续...")
+
+
 def run_data_preview(data, config=None):
     config = config or {}
     previewer = DataPreviewer(data)
@@ -511,6 +560,9 @@ def run_data_preview(data, config=None):
 
         elif cmd in ("a", "all"):
             _preview_top_n(previewer)
+
+        elif cmd in ("v", "valid", "validate"):
+            _run_validation(previewer, config)
 
         elif cmd in ("e", "export"):
             _export_filtered(previewer, config)
