@@ -61,6 +61,36 @@ def _build_text_report(batch_task):
     lines.append(f"输出目录: {batch_task['output_dir']}")
     lines.append("")
 
+    config = batch_task.get("config", {})
+    if config:
+        lines.append(sep)
+        lines.append("  导出配置")
+        lines.append(sep)
+        lines.append("")
+        lines.append(f"导出格式: {config.get('export_format', 'excel')}")
+        lines.append(f"自动检测字段: {'是' if config.get('auto_detect_headers', True) else '否'}")
+
+        split_cfg = config.get("split_config", {})
+        if split_cfg.get("enabled"):
+            rule_label = {
+                "by_value": "按字段值",
+                "by_range": "按数值范围",
+                "by_custom": "自定义规则",
+            }.get(split_cfg.get("split_rule", "by_value"), split_cfg.get("split_rule", "by_value"))
+            lines.append("")
+            lines.append("工作表拆分: 已启用")
+            lines.append(f"  拆分规则: {rule_label}")
+            lines.append(f"  拆分字段: {split_cfg.get('split_field', '')}")
+            lines.append(f"  命名模板: {split_cfg.get('sheet_name_template', '{value}')}")
+            lines.append(f"  汇总工作表: {'是' if split_cfg.get('include_all_sheet', True) else '否'}")
+            if split_cfg.get("include_all_sheet", True):
+                lines.append(f"  汇总表名称: {split_cfg.get('all_sheet_name', '全部数据')}")
+            lines.append(f"  未分类标签: {split_cfg.get('empty_value_label', '未分类')}")
+        else:
+            lines.append("工作表拆分: 未启用")
+
+        lines.append("")
+
     lines.append(sep)
     lines.append("  处理统计")
     lines.append(sep)
@@ -149,6 +179,23 @@ def _build_json_report(batch_task):
     total_data = sum(f.get("data_count", 0) for f in batch_task["files"])
     total_duration = sum(f.get("duration_seconds", 0) for f in batch_task["files"])
 
+    config = batch_task.get("config", {})
+    split_info = None
+    if config:
+        split_cfg = config.get("split_config", {})
+        if split_cfg.get("enabled"):
+            split_info = {
+                "enabled": True,
+                "split_field": split_cfg.get("split_field", ""),
+                "split_rule": split_cfg.get("split_rule", "by_value"),
+                "sheet_name_template": split_cfg.get("sheet_name_template", "{value}"),
+                "include_all_sheet": split_cfg.get("include_all_sheet", True),
+                "all_sheet_name": split_cfg.get("all_sheet_name", "全部数据"),
+                "empty_value_label": split_cfg.get("empty_value_label", "未分类"),
+            }
+        else:
+            split_info = {"enabled": False}
+
     return {
         "batch_id": batch_task["batch_id"],
         "status": batch_task["status"],
@@ -158,6 +205,11 @@ def _build_json_report(batch_task):
         "source_type": batch_task["source_type"],
         "sources": batch_task["sources"],
         "output_dir": batch_task["output_dir"],
+        "export_config": {
+            "format": config.get("export_format", "excel") if config else "excel",
+            "auto_detect_headers": config.get("auto_detect_headers", True) if config else True,
+            "split_config": split_info,
+        },
         "statistics": {
             "total_files": batch_task["total_files"],
             "completed": batch_task["completed_count"],

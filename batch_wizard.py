@@ -577,6 +577,26 @@ def _show_task_detail(batch_id):
     print(f"失败: {batch_task['failed_count']}")
     print(f"跳过: {batch_task['skipped_count']}")
 
+    config = batch_task.get("config", {})
+    if config:
+        print(f"\n导出配置:")
+        print(f"  格式: {config.get('export_format', 'excel')}")
+        print(f"  自动检测字段: {'是' if config.get('auto_detect_headers', True) else '否'}")
+
+        split_cfg = config.get("split_config", {})
+        if split_cfg.get("enabled"):
+            rule_label = {
+                "by_value": "按字段值",
+                "by_range": "按数值范围",
+                "by_custom": "自定义规则",
+            }.get(split_cfg.get("split_rule", "by_value"), split_cfg.get("split_rule", "by_value"))
+            print(f"  工作表拆分: 已启用（{rule_label}）")
+            print(f"    拆分字段: {split_cfg.get('split_field', '')}")
+            print(f"    命名模板: {split_cfg.get('sheet_name_template', '{value}')}")
+            print(f"    汇总Sheet: {'是' if split_cfg.get('include_all_sheet', True) else '否'}")
+        else:
+            print(f"  工作表拆分: 未启用")
+
     print("\n文件列表:")
     for i, f in enumerate(batch_task["files"], 1):
         icon = _get_file_status_icon(f["status"])

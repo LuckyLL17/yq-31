@@ -99,7 +99,23 @@ class BatchProcessor:
             if self.on_file_complete:
                 self.on_file_complete(file_item, len(data))
 
-            return True, len(data)
+            sheet_info = ""
+            if export_fmt == "excel":
+                split_cfg = file_config.get("split_config", {})
+                if split_cfg.get("enabled") and split_cfg.get("split_field"):
+                    try:
+                        from openpyxl import load_workbook
+                        wb = load_workbook(output_path, read_only=True)
+                        sheet_count = len(wb.sheetnames)
+                        sheet_names = ", ".join(wb.sheetnames[:5])
+                        if sheet_count > 5:
+                            sheet_names += f" 等共 {sheet_count} 个"
+                        wb.close()
+                        sheet_info = f"，{sheet_count} 个工作表（{sheet_names}）"
+                    except Exception:
+                        pass
+
+            return True, f"{len(data)} 条数据{sheet_info}"
 
         except Exception as e:
             error_msg = str(e)
@@ -157,7 +173,7 @@ class BatchProcessor:
                 if file_item["status"] == TASK_STATUS_SKIPPED:
                     print(f"  ⏭️  {result}")
                 else:
-                    print(f"  ✅ 成功 - {result} 条数据")
+                    print(f"  ✅ 成功 - {result}")
             else:
                 fail_count += 1
                 print(f"  ❌ 失败 - {result}")
