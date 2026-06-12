@@ -356,7 +356,27 @@ def main():
         save_config(config, args.save_config)
         print(f"配置已保存到: {os.path.abspath(args.save_config)}")
 
+    if prompt_confirm_preview():
+        from data_previewer import start_preview_mode
+        result = start_preview_mode(config)
+        if result is not None and prompt_confirm_execute_after_preview():
+            export_config = copy.deepcopy(config)
+            auto_headers = auto_detect_headers(result)
+            headers = merge_headers(config.get("default_headers", []), auto_headers, config)
+            export_to_excel(data=result, headers=headers, config=export_config)
+        return
+
     run_with_config(config)
+
+
+def prompt_confirm_preview():
+    while True:
+        user_input = input("\n是否先预览并筛选数据？ (Y/n): ").strip().lower()
+        if not user_input or user_input in ("y", "yes"):
+            return True
+        if user_input in ("n", "no"):
+            return False
+        print("  ⚠️  请输入 y 或 n")
 
 
 def prompt_confirm_execute():
