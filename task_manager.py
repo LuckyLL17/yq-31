@@ -34,22 +34,41 @@ def create_batch_task(source_type, sources, output_dir, config, options=None):
 
     batch_id = str(uuid.uuid4())[:8]
     now = datetime.now().isoformat()
+    output_dir_abs = os.path.abspath(output_dir)
 
     file_items = []
     if source_type == "directory":
         for src in sources:
-            if os.path.isdir(src):
-                for root, _, files in os.walk(src):
-                    for f in files:
-                        if f.lower().endswith(".json"):
-                            full_path = os.path.join(root, f)
-                            file_items.append(_create_file_item(full_path, output_dir, src))
-            elif os.path.isfile(src) and src.lower().endswith(".json"):
-                file_items.append(_create_file_item(src, output_dir))
+            src_abs = os.path.abspath(src)
+            if not os.path.isdir(src):
+                if os.path.isfile(src) and src.lower().endswith(".json"):
+                    file_items.append(_create_file_item(src, output_dir_abs))
+                continue
+
+            try:
+                common = os.path.commonpath([output_dir_abs, src_abs])
+                if common == src_abs and output_dir_abs != src_abs:
+                    print(f"⚠️  输出目录 {output_dir_abs} 位于扫描目录 {src_abs} 内，为避免冲突已跳过该目录下的输出目录扫描")
+            except ValueError:
+                pass
+
+            for root, _, files in os.walk(src_abs):
+                root_abs = os.path.abspath(root)
+                try:
+                    out_common = os.path.commonpath([output_dir_abs, root_abs])
+                    if out_common == output_dir_abs:
+                        continue
+                except ValueError:
+                    pass
+
+                for f in files:
+                    if f.lower().endswith(".json"):
+                        full_path = os.path.join(root_abs, f)
+                        file_items.append(_create_file_item(full_path, output_dir_abs, src_abs))
     else:
         for src in sources:
             if os.path.isfile(src) and src.lower().endswith(".json"):
-                file_items.append(_create_file_item(src, output_dir))
+                file_items.append(_create_file_item(src, output_dir_abs))
 
     batch_task = {
         "batch_id": batch_id,
@@ -74,17 +93,39 @@ def create_batch_task(source_type, sources, output_dir, config, options=None):
 
 
 def _create_file_item(json_path, output_dir, base_dir=None):
+    output_dir_abs = os.path.abspath(output_dir)
+
     if base_dir:
-        rel_path = os.path.relpath(json_path, base_dir)
+        base_dir_abs = os.path.abspath(base_dir)
+        json_path_abs = os.path.abspath(json_path)
+
+        try:
+            rel_path = os.path.relpath(json_path_abs, base_dir_abs)
+        except ValueError:
+            rel_path = os.path.basename(json_path)
+
+        if ".." in rel_path.split(os.sep):
+            rel_path = os.path.basename(json_path)
+
         base_name = os.path.splitext(rel_path)[0]
-        excel_path = os.path.join(output_dir, base_name + ".xlsx")
+        excel_path = os.path.join(output_dir_abs, base_name + ".xlsx")
     else:
         base_name = os.path.splitext(os.path.basename(json_path))[0]
-        excel_path = os.path.join(output_dir, base_name + ".xlsx")
+        excel_path = os.path.join(output_dir_abs, base_name + ".xlsx")
+
+    excel_path_abs = os.path.abspath(excel_path)
+    try:
+        common = os.path.commonpath([output_dir_abs, excel_path_abs])
+        if common != output_dir_abs:
+            safe_name = os.path.splitext(os.path.basename(json_path))[0]
+            excel_path_abs = os.path.join(output_dir_abs, safe_name + ".xlsx")
+    except ValueError:
+        safe_name = os.path.splitext(os.path.basename(json_path))[0]
+        excel_path_abs = os.path.join(output_dir_abs, safe_name + ".xlsx")
 
     return {
         "json_path": os.path.abspath(json_path),
-        "excel_path": os.path.abspath(excel_path),
+        "excel_path": excel_path_abs,
         "status": TASK_STATUS_PENDING,
         "data_count": 0,
         "error": None,

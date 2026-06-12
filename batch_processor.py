@@ -38,10 +38,18 @@ class BatchProcessor:
         print("\n\n收到中断信号，正在安全停止...")
         self._stop_requested = True
 
-    def process_file(self, file_item, config):
+    def process_file(self, file_item, config, options=None):
+        options = options or {}
         json_path = file_item["json_path"]
         excel_path = file_item["excel_path"]
         self._current_json_path = json_path
+
+        skip_existing = options.get("skip_existing", False)
+        if skip_existing and os.path.exists(excel_path):
+            update_file_status(self.batch_task, json_path, TASK_STATUS_SKIPPED)
+            if self.on_file_complete:
+                self.on_file_complete(file_item, 0)
+            return True, "已跳过（文件已存在）"
 
         update_file_status(self.batch_task, json_path, TASK_STATUS_RUNNING)
 
@@ -59,7 +67,23 @@ class BatchProcessor:
 
             output_dir = os.path.dirname(excel_path)
             if output_dir and not os.path.exists(output_dir):
-                os.makedirs(output_dir, exist_ok=True)
+                batch_output_dir = os.path.abspath(self.batch_task.get("output_dir", "./output"))
+                try:
+                    common = os.path.commonpath([batch_output_dir, os.path.abspath(output_dir)])
+                    if common == batch_output_dir:
+                        os.makedirs(output_dir, exist_ok=True)
+                    else:
+                        output_dir = batch_output_dir
+                        safe_name = os.path.splitext(os.path.basename(excel_path))[0]
+                        excel_path = os.path.join(batch_output_dir, safe_name + ".xlsx")
+                        file_config["excel_output_path"] = excel_path
+                        file_item["excel_path"] = excel_path
+                        if not os.path.exists(output_dir):
+                            os.makedirs(output_dir, exist_ok=True)
+                except ValueError:
+                    output_dir = batch_output_dir
+                    if not os.path.exists(output_dir):
+                        os.makedirs(output_dir, exist_ok=True)
 
             export_to_excel(data=data, headers=headers, config=file_config)
 
@@ -89,6 +113,8 @@ class BatchProcessor:
         if config is None:
             config = self.batch_task.get("config", {})
 
+        options = self.batch_task.get("options", {})
+
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
@@ -117,11 +143,14 @@ class BatchProcessor:
             rel_path = os.path.basename(json_path)
             print(f"\n[{idx}/{len(pending_files)}] 处理: {rel_path}")
 
-            success, result = self.process_file(file_item, config)
+            success, result = self.process_file(file_item, config, options)
 
             if success:
                 success_count += 1
-                print(f"  ✅ 成功 - {result} 条数据")
+                if file_item["status"] == TASK_STATUS_SKIPPED:
+                    print(f"  ⏭️  {result}")
+                else:
+                    print(f"  ✅ 成功 - {result} 条数据")
             else:
                 fail_count += 1
                 print(f"  ❌ 失败 - {result}")

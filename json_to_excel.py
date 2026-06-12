@@ -344,6 +344,11 @@ def parse_args():
         choices=["txt", "json", "both"],
         help="批量处理：报告格式 (txt/json/both)，默认txt",
     )
+    parser.add_argument(
+        "--batch-skip-existing",
+        action="store_true",
+        help="批量处理：跳过已存在的Excel文件",
+    )
     return parser.parse_args()
 
 
@@ -560,6 +565,7 @@ def _handle_batch_operations(args):
             options={
                 "generate_report": True,
                 "report_format": args.batch_report_format,
+                "skip_existing": args.batch_skip_existing,
             },
         )
 
