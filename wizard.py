@@ -25,6 +25,15 @@ from config_manager import (
     remove_header,
     reorder_headers,
 )
+from style_template_manager import (
+    apply_template_to_config,
+    create_template_from_config,
+    list_templates,
+    get_border_style_name,
+    BORDER_STYLES,
+    BORDER_STYLE_NAMES,
+    FONT_FAMILIES,
+)
 
 from json_to_excel import load_json, auto_detect_headers, flatten_dict
 
@@ -236,6 +245,102 @@ class ConfigWizard:
         print("\n✅ 字段配置完成")
         input("\n按回车继续...")
 
+    def _prompt_font_family(self, message, default="Microsoft YaHei"):
+        print(f"\n{message}")
+        for i, font in enumerate(FONT_FAMILIES, 1):
+            print(f"  {i:2d}. {font}")
+
+        while True:
+            user_input = input(f"请选择 (1-{len(FONT_FAMILIES)}, 回车默认 {default}): ").strip()
+
+            if not user_input:
+                return default
+
+            try:
+                index = int(user_input) - 1
+                if 0 <= index < len(FONT_FAMILIES):
+                    return FONT_FAMILIES[index]
+            except ValueError:
+                pass
+
+            if user_input in FONT_FAMILIES:
+                return user_input
+
+            print(f"  ⚠️  请输入 1 到 {len(FONT_FAMILIES)} 之间的数字，或有效的字体名称")
+
+    def _prompt_border_style(self, message, default="thin"):
+        print(f"\n{message}")
+        print("  0. 无边框")
+        for i, style in enumerate(BORDER_STYLES, 1):
+            name = BORDER_STYLE_NAMES.get(style, style)
+            print(f"  {i:2d}. {style} ({name})")
+
+        while True:
+            default_index = BORDER_STYLES.index(default) + 1 if default in BORDER_STYLES else 0
+            user_input = input(f"请选择 (0-{len(BORDER_STYLES)}, 回车默认 {default_index}): ").strip()
+
+            if not user_input:
+                return default
+
+            try:
+                index = int(user_input)
+                if index == 0:
+                    return None
+                if 1 <= index <= len(BORDER_STYLES):
+                    return BORDER_STYLES[index - 1]
+            except ValueError:
+                pass
+
+            if user_input in BORDER_STYLES:
+                return user_input
+            if user_input.lower() in ("none", "null", "无"):
+                return None
+
+            print(f"  ⚠️  请输入 0 到 {len(BORDER_STYLES)} 之间的数字，或有效的边框样式")
+
+    def _apply_template_interactive(self):
+        templates = list_templates()
+        print("\n可用样式模板:")
+        template_list = []
+        for i, (template_id, template) in enumerate(templates.items(), 1):
+            is_builtin = template_id in ("default", "professional", "fresh", "warm", "elegant", "minimal")
+            builtin_tag = " [内置]" if is_builtin else " [自定义]"
+            print(f"  {i:2d}. {template_id:15s} {builtin_tag} - {template.get('name', '未命名')}")
+            template_list.append(template_id)
+
+        print(f"  0. 取消")
+
+        choice = prompt_number(
+            "请选择要应用的模板",
+            min_value=0,
+            max_value=len(template_list),
+            default=0,
+        )
+
+        if choice == 0:
+            return
+
+        template_id = template_list[choice - 1]
+        success, msg = apply_template_to_config(self.config, template_id)
+        print(f"\n{msg}")
+
+    def _save_as_template_interactive(self):
+        template_id = prompt_input("请输入模板ID (英文标识)", required=True)
+        name = prompt_input("请输入模板名称", required=True)
+        description = prompt_input("请输入模板描述", required=False, default="")
+
+        success, msg = create_template_from_config(
+            template_id, name, description, self.config, overwrite=False
+        )
+
+        if not success and "已存在" in msg:
+            if prompt_confirm(f"模板 '{template_id}' 已存在，是否覆盖？", default=False):
+                success, msg = create_template_from_config(
+                    template_id, name, description, self.config, overwrite=True
+                )
+
+        print(f"\n{msg}")
+
     def step_configure_styles(self):
         clear_screen()
         print_step(self.current_step, self.total_steps, "配置导出样式")
@@ -252,25 +357,47 @@ class ConfigWizard:
             must_exist=False,
         )
 
-        self.config["style_header"] = prompt_confirm(
-            "是否启用表头样式？",
-            default=self.config.get("style_header", True),
-        )
+        while True:
+            clear_screen()
+            print_step(self.current_step, self.total_steps, "配置导出样式")
 
-        if self.config["style_header"]:
-            self._config_header_style()
+            print("\n样式快捷操作:")
+            print("  1. 应用样式模板")
+            print("  2. 保存当前样式为模板")
+            print("  3. 配置表头样式")
+            print("  4. 配置数据行样式")
+            print("  0. 完成样式配置")
 
-        self.config["style_alt_rows"] = prompt_confirm(
-            "是否启用隔行变色？",
-            default=self.config.get("style_alt_rows", True),
-        )
-
-        if self.config["style_alt_rows"]:
-            data_style = self.config.setdefault("data_style", {})
-            data_style["alt_row_color"] = prompt_color(
-                "请输入隔行背景色（十六进制）",
-                default=data_style.get("alt_row_color", "#F2F2F2"),
+            choice = prompt_number(
+                "\n请选择操作",
+                min_value=0,
+                max_value=4,
+                default=0,
             )
+
+            if choice == 0:
+                break
+            elif choice == 1:
+                self._apply_template_interactive()
+                input("\n按回车继续...")
+            elif choice == 2:
+                self._save_as_template_interactive()
+                input("\n按回车继续...")
+            elif choice == 3:
+                self.config["style_header"] = prompt_confirm(
+                    "是否启用表头样式？",
+                    default=self.config.get("style_header", True),
+                )
+                if self.config["style_header"]:
+                    self._config_header_style()
+                input("\n按回车继续...")
+            elif choice == 4:
+                self.config["style_alt_rows"] = prompt_confirm(
+                    "是否启用隔行变色？",
+                    default=self.config.get("style_alt_rows", True),
+                )
+                self._config_data_style()
+                input("\n按回车继续...")
 
         print("\n✅ 样式配置完成")
         input("\n按回车继续...")
@@ -443,8 +570,83 @@ class ConfigWizard:
                 update_header_width(self.config, header["key"], auto_w)
         print("✅ 已全部使用自动宽度")
 
+    def _config_data_style(self):
+        data_style = self.config.setdefault("data_style", {})
+
+        print("\n数据行字体配置:")
+        data_style["font_name"] = self._prompt_font_family(
+            "选择数据行字体",
+            default=data_style.get("font_name", "Microsoft YaHei"),
+        )
+
+        data_style["font_bold"] = prompt_confirm(
+            "数据行字体加粗？",
+            default=data_style.get("font_bold", False),
+        )
+
+        data_style["font_size"] = prompt_number(
+            "数据行字体大小",
+            default=data_style.get("font_size", 11),
+            min_value=8,
+            max_value=24,
+        )
+
+        data_style["font_color"] = prompt_color(
+            "数据行字体颜色",
+            default=data_style.get("font_color", "#000000"),
+        )
+
+        data_style["wrap_text"] = prompt_confirm(
+            "数据行自动换行？",
+            default=data_style.get("wrap_text", True),
+        )
+
+        if self.config.get("style_alt_rows", True):
+            data_style["alt_row_color"] = prompt_color(
+                "隔行背景色（十六进制）",
+                default=data_style.get("alt_row_color", "#F2F2F2"),
+            )
+
+        data_style["alignment"] = prompt_choice(
+            "数据行水平对齐方式",
+            [
+                ("left", "左对齐 (推荐)"),
+                ("center", "居中对齐"),
+                ("right", "右对齐"),
+            ],
+            default_index=0,
+        )
+
+        data_style["vertical_alignment"] = prompt_choice(
+            "数据行垂直对齐方式",
+            [
+                ("top", "顶部对齐"),
+                ("center", "居中对齐 (推荐)"),
+                ("bottom", "底部对齐"),
+            ],
+            default_index=1,
+        )
+
+        print("\n数据行边框配置:")
+        data_style["border_style"] = self._prompt_border_style(
+            "选择数据行边框样式",
+            default=data_style.get("border_style", "thin"),
+        )
+
+        if data_style["border_style"] is not None:
+            data_style["border_color"] = prompt_color(
+                "数据行边框颜色",
+                default=data_style.get("border_color", "#000000"),
+            )
+
     def _config_header_style(self):
         header_style = self.config.setdefault("header_style", {})
+
+        print("\n表头字体配置:")
+        header_style["font_name"] = self._prompt_font_family(
+            "选择表头字体",
+            default=header_style.get("font_name", "Microsoft YaHei"),
+        )
 
         header_style["font_bold"] = prompt_confirm(
             "表头字体加粗？",
@@ -477,6 +679,28 @@ class ConfigWizard:
             ],
             default_index=1,
         )
+
+        header_style["vertical_alignment"] = prompt_choice(
+            "表头垂直对齐方式",
+            [
+                ("top", "顶部对齐"),
+                ("center", "居中对齐 (推荐)"),
+                ("bottom", "底部对齐"),
+            ],
+            default_index=1,
+        )
+
+        print("\n表头边框配置:")
+        header_style["border_style"] = self._prompt_border_style(
+            "选择表头边框样式",
+            default=header_style.get("border_style", "thin"),
+        )
+
+        if header_style["border_style"] is not None:
+            header_style["border_color"] = prompt_color(
+                "表头边框颜色",
+                default=header_style.get("border_color", "#000000"),
+            )
 
 
 def run_wizard(config=None):

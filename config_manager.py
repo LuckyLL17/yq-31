@@ -23,15 +23,26 @@ DEFAULT_CONFIG = {
     "style_header": True,
     "style_alt_rows": True,
     "header_style": {
+        "font_name": "Microsoft YaHei",
         "font_bold": True,
         "font_color": "#FFFFFF",
         "font_size": 12,
         "bg_color": "#4472C4",
         "alignment": "center",
+        "border_style": "thin",
+        "border_color": "#000000",
     },
     "data_style": {
+        "font_name": "Microsoft YaHei",
+        "font_bold": False,
+        "font_color": "#000000",
+        "font_size": 11,
         "wrap_text": True,
         "alt_row_color": "#F2F2F2",
+        "alignment": "left",
+        "vertical_alignment": "center",
+        "border_style": "thin",
+        "border_color": "#000000",
     },
 }
 

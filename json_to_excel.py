@@ -91,51 +91,64 @@ def _get_alignment(align_str):
     return align_map.get(align_str, "center")
 
 
+def _create_border(style_config):
+    border_style = style_config.get("border_style", "thin")
+    border_color = style_config.get("border_color", "000000").replace("#", "")
+
+    if border_style is None:
+        return None
+
+    side = Side(style=border_style, color=border_color)
+    return Border(left=side, right=side, top=side, bottom=side)
+
+
 def apply_header_style(ws, header_cells, config):
     header_style = config.get("header_style", {})
 
+    font_name = header_style.get("font_name", "Microsoft YaHei")
     font_bold = header_style.get("font_bold", True)
     font_color = header_style.get("font_color", "FFFFFF").replace("#", "")
     font_size = header_style.get("font_size", 12)
     bg_color = header_style.get("bg_color", "4472C4").replace("#", "")
     alignment = _get_alignment(header_style.get("alignment", "center"))
+    vertical_alignment = header_style.get("vertical_alignment", "center")
 
-    font = Font(bold=font_bold, color=font_color, size=font_size)
+    font = Font(name=font_name, bold=font_bold, color=font_color, size=font_size)
     fill = PatternFill(start_color=bg_color, end_color=bg_color, fill_type="solid")
-    alignment = Alignment(horizontal=alignment, vertical="center")
-    thin_border = Border(
-        left=Side(style="thin"),
-        right=Side(style="thin"),
-        top=Side(style="thin"),
-        bottom=Side(style="thin"),
-    )
+    alignment = Alignment(horizontal=alignment, vertical=vertical_alignment)
+    border = _create_border(header_style)
 
     for cell in header_cells:
         cell.font = font
         cell.fill = fill
         cell.alignment = alignment
-        cell.border = thin_border
+        if border:
+            cell.border = border
 
 
 def apply_data_style(ws, headers, data_rows_count, config):
     data_style = config.get("data_style", {})
+    font_name = data_style.get("font_name", "Microsoft YaHei")
+    font_bold = data_style.get("font_bold", False)
+    font_color = data_style.get("font_color", "000000").replace("#", "")
+    font_size = data_style.get("font_size", 11)
     wrap_text = data_style.get("wrap_text", True)
     alt_row_color = data_style.get("alt_row_color", "F2F2F2").replace("#", "")
+    alignment = _get_alignment(data_style.get("alignment", "left"))
+    vertical_alignment = data_style.get("vertical_alignment", "center")
 
-    alignment = Alignment(vertical="center", wrap_text=wrap_text)
-    thin_border = Border(
-        left=Side(style="thin"),
-        right=Side(style="thin"),
-        top=Side(style="thin"),
-        bottom=Side(style="thin"),
-    )
+    font = Font(name=font_name, bold=font_bold, color=font_color, size=font_size)
+    alignment = Alignment(horizontal=alignment, vertical=vertical_alignment, wrap_text=wrap_text)
+    border = _create_border(data_style)
     alt_fill = PatternFill(start_color=alt_row_color, end_color=alt_row_color, fill_type="solid")
 
     for row_idx in range(2, 2 + data_rows_count):
         for col_idx in range(1, len(headers) + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
+            cell.font = font
             cell.alignment = alignment
-            cell.border = thin_border
+            if border:
+                cell.border = border
             if config.get("style_alt_rows", True) and row_idx % 2 == 0:
                 cell.fill = alt_fill
 
@@ -250,6 +263,40 @@ def parse_args():
         default=None,
         help="将当前配置保存到指定文件",
     )
+    parser.add_argument(
+        "--list-templates",
+        action="store_true",
+        help="列出所有可用的样式模板",
+    )
+    parser.add_argument(
+        "--apply-template",
+        type=str,
+        default=None,
+        help="应用指定的样式模板",
+    )
+    parser.add_argument(
+        "--template-manager",
+        action="store_true",
+        help="启动样式模板管理器",
+    )
+    parser.add_argument(
+        "--save-as-template",
+        type=str,
+        default=None,
+        help="将当前样式保存为模板（指定模板ID）",
+    )
+    parser.add_argument(
+        "--template-name",
+        type=str,
+        default=None,
+        help="保存模板时的名称（与 --save-as-template 配合使用）",
+    )
+    parser.add_argument(
+        "--template-desc",
+        type=str,
+        default="",
+        help="保存模板时的描述（与 --save-as-template 配合使用）",
+    )
     return parser.parse_args()
 
 
@@ -308,6 +355,59 @@ def run_with_config(config, data=None):
         sys.exit(1)
 
 
+def handle_template_operations(args, config):
+    from style_template_manager import (
+        list_templates,
+        apply_template_to_config,
+        create_template_from_config,
+        get_border_style_name,
+    )
+
+    if args.list_templates:
+        templates = list_templates()
+        print("=" * 70)
+        print("可用样式模板")
+        print("=" * 70)
+        for template_id, template in templates.items():
+            is_builtin = template_id in ("default", "professional", "fresh", "warm", "elegant", "minimal")
+            builtin_tag = " [内置]" if is_builtin else " [自定义]"
+            header_bg = template.get("header_style", {}).get("bg_color", "#FFFFFF")
+            alt_color = template.get("data_style", {}).get("alt_row_color", "#FFFFFF")
+            border_style = template.get("header_style", {}).get("border_style", "thin")
+            border_name = get_border_style_name(border_style) if border_style else "无"
+            print(f"\n{template_id}{builtin_tag}")
+            print(f"  名称: {template.get('name', '未命名')}")
+            print(f"  描述: {template.get('description', '无描述')}")
+            print(f"  表头背景: {header_bg} | 隔行色: {alt_color} | 边框: {border_name}")
+        return True
+
+    if args.template_manager:
+        from style_template_wizard import run_style_template_manager
+        run_style_template_manager(config)
+        return True
+
+    if args.apply_template:
+        success, msg = apply_template_to_config(config, args.apply_template)
+        print(msg)
+        if not success:
+            sys.exit(1)
+        return False
+
+    if args.save_as_template:
+        template_id = args.save_as_template
+        name = args.template_name or template_id
+        description = args.template_desc
+        success, msg = create_template_from_config(
+            template_id, name, description, config, overwrite=False
+        )
+        print(msg)
+        if not success:
+            sys.exit(1)
+        return True
+
+    return False
+
+
 def main():
     args = parse_args()
 
@@ -334,6 +434,18 @@ def main():
 
     config = load_config(args.config)
     config = apply_cli_overrides(config, args)
+
+    template_exit = handle_template_operations(args, config)
+    if template_exit and not args.apply_template:
+        return
+
+    if args.apply_template:
+        if args.save_config:
+            save_config(config, args.save_config)
+            print(f"配置已保存到: {os.path.abspath(args.save_config)}")
+        if prompt_confirm_execute():
+            run_with_config(config)
+        return
 
     if args.preview:
         from data_previewer import start_preview_mode
