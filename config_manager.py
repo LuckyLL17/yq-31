@@ -88,6 +88,18 @@ DEFAULT_CONFIG = {
     },
     "validation_rules": [],
     "validation_on_fail_default": "mark",
+    "split_config": {
+        "enabled": False,
+        "split_field": "",
+        "split_rule": "by_value",
+        "sheet_name_template": "{value}",
+        "include_all_sheet": True,
+        "all_sheet_name": "全部数据",
+        "empty_value_label": "未分类",
+        "max_sheet_name_length": 31,
+        "range_groups": [],
+        "custom_rules": [],
+    },
 }
 
 CONFIG_FILE_PATH = "./config.json"
@@ -180,6 +192,39 @@ def validate_config(config):
             on_fail = rule.get("on_fail", "mark")
             if on_fail not in valid_actions:
                 errors.append(f"第 {i + 1} 条校验规则处理方式无效，应为 {', '.join(valid_actions)}")
+
+    split_config = config.get("split_config", {})
+    if split_config.get("enabled"):
+        if not split_config.get("split_field"):
+            errors.append("启用拆分时必须指定 split_field（拆分字段）")
+
+        valid_split_rules = {"by_value", "by_range", "by_custom"}
+        split_rule = split_config.get("split_rule", "by_value")
+        if split_rule not in valid_split_rules:
+            errors.append(f"split_rule 无效，应为 {', '.join(sorted(valid_split_rules))}")
+
+        if split_rule == "by_range":
+            range_groups = split_config.get("range_groups", [])
+            if not isinstance(range_groups, list) or len(range_groups) == 0:
+                errors.append("使用 by_range 拆分时必须配置 range_groups")
+            else:
+                for gi, group in enumerate(range_groups):
+                    if not isinstance(group, dict) or "name" not in group:
+                        errors.append(f"第 {gi + 1} 个 range_group 缺少 name 属性")
+
+        if split_rule == "by_custom":
+            custom_rules = split_config.get("custom_rules", [])
+            if not isinstance(custom_rules, list) or len(custom_rules) == 0:
+                errors.append("使用 by_custom 拆分时必须配置 custom_rules")
+            else:
+                for ci, rule in enumerate(custom_rules):
+                    if not isinstance(rule, dict):
+                        errors.append(f"第 {ci + 1} 个 custom_rule 格式错误，应为字典")
+                        continue
+                    if "name" not in rule:
+                        errors.append(f"第 {ci + 1} 个 custom_rule 缺少 name 属性")
+                    if "values" not in rule and "condition" not in rule and "min" not in rule:
+                        errors.append(f"第 {ci + 1} 个 custom_rule 缺少匹配条件（values/condition/min-max）")
 
     return errors
 

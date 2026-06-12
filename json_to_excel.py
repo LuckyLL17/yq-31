@@ -203,6 +203,285 @@ def extract_value(item, key):
     return ""
 
 
+def _sanitize_sheet_name(name, max_length=31):
+    invalid_chars = ['\\', '/', '*', '[', ']', ':', '?']
+    result = str(name)
+    for ch in invalid_chars:
+        result = result.replace(ch, '_')
+    result = result.strip()
+    if not result:
+        result = "Sheet"
+    if len(result) > max_length:
+        result = result[:max_length]
+    return result
+
+
+def _render_sheet_name(template, value, index, total_count, empty_label="未分类"):
+    display_value = value if value is not None and value != "" else empty_label
+    try:
+        return template.format(
+            value=display_value,
+            index=index,
+            count=total_count,
+            num=index,
+        )
+    except (KeyError, IndexError):
+        return str(display_value)
+
+
+def _match_custom_rule(value, rule):
+    if "values" in rule:
+        rule_values = rule["values"]
+        if isinstance(rule_values, list):
+            return value in rule_values
+        return value == rule_values
+
+    if "condition" in rule:
+        try:
+            return eval(rule["condition"], {"__builtins__": {}}, {"value": value})
+        except Exception:
+            return False
+
+    if "min" in rule or "max" in rule:
+        try:
+            num_val = float(value) if value is not None and value != "" else 0
+            min_val = rule.get("min")
+            max_val = rule.get("max")
+            include_min = rule.get("include_min", True)
+            include_max = rule.get("include_max", False)
+
+            min_ok = True
+            if min_val is not None:
+                if include_min:
+                    min_ok = num_val >= min_val
+                else:
+                    min_ok = num_val > min_val
+
+            max_ok = True
+            if max_val is not None:
+                if include_max:
+                    max_ok = num_val <= max_val
+                else:
+                    max_ok = num_val < max_val
+
+            return min_ok and max_ok
+        except (ValueError, TypeError):
+            return False
+
+    return False
+
+
+def _match_range_group(value, group):
+    try:
+        num_val = float(value) if value is not None and value != "" else None
+        if num_val is None:
+            return False
+
+        min_val = group.get("min")
+        max_val = group.get("max")
+        include_min = group.get("include_min", True)
+        include_max = group.get("include_max", False)
+
+        min_ok = True
+        if min_val is not None:
+            if include_min:
+                min_ok = num_val >= min_val
+            else:
+                min_ok = num_val > min_val
+
+        max_ok = True
+        if max_val is not None:
+            if include_max:
+                max_ok = num_val <= max_val
+            else:
+                max_ok = num_val < max_val
+
+        return min_ok and max_ok
+    except (ValueError, TypeError):
+        return False
+
+
+def split_data_by_field(data, split_field, split_config):
+    split_rule = split_config.get("split_rule", "by_value")
+    empty_label = split_config.get("empty_value_label", "未分类")
+
+    groups = []
+    group_order = []
+    group_to_index = {}
+
+    def _get_or_create_group(name):
+        if name not in group_to_index:
+            idx = len(groups)
+            groups.append({"name": name, "data": [], "original_indices": []})
+            group_order.append(name)
+            group_to_index[name] = idx
+        return group_to_index[name]
+
+    for orig_idx, item in enumerate(data):
+        if not isinstance(item, dict):
+            continue
+        value = extract_value(item, split_field)
+
+        matched = False
+
+        if split_rule == "by_value":
+            group_name = value if value is not None and value != "" else empty_label
+            gidx = _get_or_create_group(group_name)
+            groups[gidx]["data"].append(item)
+            groups[gidx]["original_indices"].append(orig_idx)
+            matched = True
+
+        elif split_rule == "by_range":
+            range_groups = split_config.get("range_groups", [])
+            for rg in range_groups:
+                if _match_range_group(value, rg):
+                    gidx = _get_or_create_group(rg["name"])
+                    groups[gidx]["data"].append(item)
+                    groups[gidx]["original_indices"].append(orig_idx)
+                    matched = True
+                    break
+            if not matched:
+                gidx = _get_or_create_group(empty_label)
+                groups[gidx]["data"].append(item)
+                groups[gidx]["original_indices"].append(orig_idx)
+
+        elif split_rule == "by_custom":
+            custom_rules = split_config.get("custom_rules", [])
+            for cr in custom_rules:
+                if _match_custom_rule(value, cr):
+                    gidx = _get_or_create_group(cr["name"])
+                    groups[gidx]["data"].append(item)
+                    groups[gidx]["original_indices"].append(orig_idx)
+                    matched = True
+                    break
+            if not matched:
+                fallback_name = split_config.get("fallback_group_name", empty_label)
+                gidx = _get_or_create_group(fallback_name)
+                groups[gidx]["data"].append(item)
+                groups[gidx]["original_indices"].append(orig_idx)
+
+    return groups
+
+
+def _write_sheet_data(ws, data, headers, config, original_indices=None, validation_result=None):
+    header_labels = [h["label"] for h in headers]
+    ws.append(header_labels)
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        row = [extract_value(item, h["key"]) for h in headers]
+        ws.append(row)
+
+    set_column_widths(ws, headers)
+
+    if config.get("style_header", True):
+        header_cells = ws[1]
+        apply_header_style(ws, header_cells, config)
+
+    apply_data_style(ws, headers, len(data), config)
+
+    if validation_result and validation_result.marked_rows and original_indices is not None:
+        _apply_validation_marks(ws, validation_result, headers, original_indices)
+
+    ws.freeze_panes = "A2"
+
+
+def export_to_excel_with_split(data, headers, config, validation_result=None, original_indices=None):
+    output_path = config["excel_output_path"]
+    sheet_name = config.get("sheet_name", "数据导出")
+    split_config = config.get("split_config", {})
+    split_field = split_config["split_field"]
+
+    output_dir = os.path.dirname(output_path)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
+    groups = split_data_by_field(data, split_field, split_config)
+    total_groups = len(groups)
+
+    print(f"\n按字段 '{split_field}' 拆分为 {total_groups} 个分组:")
+    for gi, g in enumerate(groups):
+        print(f"  [{gi + 1}] {g['name']}: {len(g['data'])} 条数据")
+    print()
+
+    wb = Workbook()
+    default_ws = wb.active
+    wb.remove(default_ws)
+
+    sheet_name_template = split_config.get("sheet_name_template", "{value}")
+    max_sheet_len = split_config.get("max_sheet_name_length", 31)
+    include_all = split_config.get("include_all_sheet", True)
+    all_sheet_name = split_config.get("all_sheet_name", "全部数据")
+
+    if include_all:
+        ws_all = wb.create_sheet(_sanitize_sheet_name(all_sheet_name, max_sheet_len))
+        _write_sheet_data(
+            ws_all,
+            data,
+            headers,
+            config,
+            original_indices=original_indices,
+            validation_result=validation_result,
+        )
+
+    used_names = set()
+    for gi, group in enumerate(groups, start=1):
+        raw_name = _render_sheet_name(
+            sheet_name_template,
+            group["name"],
+            gi,
+            total_groups,
+            split_config.get("empty_value_label", "未分类"),
+        )
+        safe_name = _sanitize_sheet_name(raw_name, max_sheet_len)
+
+        base_name = safe_name
+        suffix = 1
+        while safe_name in used_names:
+            suffix += 1
+            extra = f"_{suffix}"
+            if len(base_name) + len(extra) > max_sheet_len:
+                safe_name = base_name[: max_sheet_len - len(extra)] + extra
+            else:
+                safe_name = base_name + extra
+
+        used_names.add(safe_name)
+
+        ws = wb.create_sheet(safe_name)
+
+        group_orig_indices = None
+        if original_indices is not None:
+            group_orig_indices = [original_indices[i] for i in group["original_indices"]]
+
+        _write_sheet_data(
+            ws,
+            group["data"],
+            headers,
+            config,
+            original_indices=group_orig_indices,
+            validation_result=validation_result,
+        )
+
+    if len(wb.sheetnames) == 0:
+        ws = wb.create_sheet(_sanitize_sheet_name(sheet_name, max_sheet_len))
+        _write_sheet_data(ws, data, headers, config)
+
+    wb.save(output_path)
+    print(f"Excel文件已成功导出: {os.path.abspath(output_path)}")
+    print(f"共 {len(wb.sheetnames)} 个工作表，{len(data)} 条数据，{len(headers)} 个字段")
+    if validation_result:
+        skipped_count = len(validation_result.skipped_rows)
+        marked_count = len(validation_result.marked_rows)
+        if skipped_count > 0:
+            print(f"跳过 {skipped_count} 条", end="")
+        if marked_count > 0:
+            print(f"，标记 {marked_count} 条", end="")
+        if skipped_count > 0 or marked_count > 0:
+            print()
+    return output_path
+
+
 def export_to_excel(data, headers, config):
     output_path = config["excel_output_path"]
     sheet_name = config.get("sheet_name", "数据导出")
@@ -241,6 +520,16 @@ def export_to_excel(data, headers, config):
         original_indices = new_indices
         data = valid_data
         print(f"  校验后有效数据: {len(data)} 条\n")
+
+    split_config = config.get("split_config", {})
+    if split_config.get("enabled") and split_config.get("split_field"):
+        return export_to_excel_with_split(
+            data=data,
+            headers=headers,
+            config=config,
+            validation_result=validation_result,
+            original_indices=original_indices,
+        )
 
     wb = Workbook()
     ws = wb.active
