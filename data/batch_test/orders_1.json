@@ -1,0 +1,6 @@
+[
+    {"order_id": "ORD001", "customer": "张三", "amount": 599, "status": "已完成", "date": "2024-01-15"},
+    {"order_id": "ORD002", "customer": "李四", "amount": 1299, "status": "已完成", "date": "2024-01-16"},
+    {"order_id": "ORD003", "customer": "王五", "amount": 299, "status": "待发货", "date": "2024-01-17"},
+    {"order_id": "ORD004", "customer": "赵六", "amount": 899, "status": "已完成", "date": "2024-01-18"}
+]

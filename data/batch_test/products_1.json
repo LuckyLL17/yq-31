@@ -1,0 +1,7 @@
+[
+    {"id": 1, "name": "产品A", "price": 100, "stock": 50, "category": "电子"},
+    {"id": 2, "name": "产品B", "price": 200, "stock": 30, "category": "电子"},
+    {"id": 3, "name": "产品C", "price": 50, "stock": 100, "category": "日用"},
+    {"id": 4, "name": "产品D", "price": 150, "stock": 25, "category": "电子"},
+    {"id": 5, "name": "产品E", "price": 80, "stock": 80, "category": "日用"}
+]

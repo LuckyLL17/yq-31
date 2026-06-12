@@ -297,6 +297,53 @@ def parse_args():
         default="",
         help="保存模板时的描述（与 --save-as-template 配合使用）",
     )
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="使用批量处理模式（交互式向导）",
+    )
+    parser.add_argument(
+        "--batch-dir",
+        type=str,
+        default=None,
+        help="批量处理：指定包含JSON文件的目录",
+    )
+    parser.add_argument(
+        "--batch-files",
+        type=str,
+        default=None,
+        help="批量处理：指定多个JSON文件，用逗号分隔",
+    )
+    parser.add_argument(
+        "--batch-output",
+        type=str,
+        default=None,
+        help="批量处理：指定输出目录",
+    )
+    parser.add_argument(
+        "--batch-resume",
+        type=str,
+        default=None,
+        help="批量处理：恢复指定ID的未完成任务",
+    )
+    parser.add_argument(
+        "--batch-list",
+        action="store_true",
+        help="批量处理：列出所有历史任务",
+    )
+    parser.add_argument(
+        "--batch-report",
+        type=str,
+        default=None,
+        help="批量处理：生成指定任务ID的处理报告",
+    )
+    parser.add_argument(
+        "--batch-report-format",
+        type=str,
+        default="txt",
+        choices=["txt", "json", "both"],
+        help="批量处理：报告格式 (txt/json/both)，默认txt",
+    )
     return parser.parse_args()
 
 
@@ -434,8 +481,111 @@ def handle_template_operations(args, config):
     return False
 
 
+def _handle_batch_operations(args):
+    if args.batch:
+        from batch_wizard import run_batch_wizard
+        config = load_config(args.config) if args.config else get_default_config()
+        run_batch_wizard(config)
+        return True
+
+    if args.batch_list:
+        from batch_wizard import show_task_manager
+        show_task_manager()
+        return True
+
+    if args.batch_resume:
+        from batch_processor import resume_batch_process
+        from report_generator import generate_report, generate_json_report, print_summary
+
+        batch_id = args.batch_resume
+        batch_task, result = resume_batch_process(batch_id)
+
+        if batch_task is None:
+            print(f"错误: {result}")
+            sys.exit(1)
+
+        fmt = args.batch_report_format
+        if fmt in ("txt", "both"):
+            report_path = generate_report(batch_task)
+            print(f"\n📄 文本报告已生成: {os.path.abspath(report_path)}")
+        if fmt in ("json", "both"):
+            report_path = generate_json_report(batch_task)
+            print(f"📄 JSON报告已生成: {os.path.abspath(report_path)}")
+
+        print_summary(batch_task)
+        return True
+
+    if args.batch_report:
+        from task_manager import load_batch_task
+        from report_generator import generate_report, generate_json_report, print_summary
+
+        batch_id = args.batch_report
+        batch_task = load_batch_task(batch_id)
+        if not batch_task:
+            print(f"错误: 任务 {batch_id} 不存在")
+            sys.exit(1)
+
+        fmt = args.batch_report_format
+        if fmt in ("txt", "both"):
+            report_path = generate_report(batch_task)
+            print(f"📄 文本报告已生成: {os.path.abspath(report_path)}")
+        if fmt in ("json", "both"):
+            report_path = generate_json_report(batch_task)
+            print(f"📄 JSON报告已生成: {os.path.abspath(report_path)}")
+
+        print_summary(batch_task)
+        return True
+
+    if args.batch_dir or args.batch_files:
+        from batch_processor import start_batch_process
+        from report_generator import generate_report, generate_json_report, print_summary
+
+        config = load_config(args.config)
+        config = apply_cli_overrides(config, args)
+
+        output_dir = args.batch_output or "./output/batch"
+
+        if args.batch_dir:
+            source_type = "directory"
+            sources = [args.batch_dir]
+        else:
+            source_type = "files"
+            sources = [f.strip() for f in args.batch_files.split(",") if f.strip()]
+
+        batch_task, result = start_batch_process(
+            source_type=source_type,
+            sources=sources,
+            output_dir=output_dir,
+            config=config,
+            options={
+                "generate_report": True,
+                "report_format": args.batch_report_format,
+            },
+        )
+
+        if batch_task is None:
+            print(f"错误: {result}")
+            sys.exit(1)
+
+        fmt = args.batch_report_format
+        if fmt in ("txt", "both"):
+            report_path = generate_report(batch_task)
+            print(f"\n📄 文本报告已生成: {os.path.abspath(report_path)}")
+        if fmt in ("json", "both"):
+            report_path = generate_json_report(batch_task)
+            print(f"📄 JSON报告已生成: {os.path.abspath(report_path)}")
+
+        print_summary(batch_task)
+        return True
+
+    return False
+
+
 def main():
     args = parse_args()
+
+    if _handle_batch_operations(args):
+        return
 
     if args.wizard:
         from wizard import run_wizard
