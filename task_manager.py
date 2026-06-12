@@ -35,6 +35,7 @@ def create_batch_task(source_type, sources, output_dir, config, options=None):
     batch_id = str(uuid.uuid4())[:8]
     now = datetime.now().isoformat()
     output_dir_abs = os.path.abspath(output_dir)
+    export_format = config.get("export_format", "excel")
 
     file_items = []
     if source_type == "directory":
@@ -42,7 +43,7 @@ def create_batch_task(source_type, sources, output_dir, config, options=None):
             src_abs = os.path.abspath(src)
             if not os.path.isdir(src):
                 if os.path.isfile(src) and src.lower().endswith(".json"):
-                    file_items.append(_create_file_item(src, output_dir_abs))
+                    file_items.append(_create_file_item(src, output_dir_abs, export_format=export_format))
                 continue
 
             try:
@@ -64,11 +65,11 @@ def create_batch_task(source_type, sources, output_dir, config, options=None):
                 for f in files:
                     if f.lower().endswith(".json"):
                         full_path = os.path.join(root_abs, f)
-                        file_items.append(_create_file_item(full_path, output_dir_abs, src_abs))
+                        file_items.append(_create_file_item(full_path, output_dir_abs, src_abs, export_format=export_format))
     else:
         for src in sources:
             if os.path.isfile(src) and src.lower().endswith(".json"):
-                file_items.append(_create_file_item(src, output_dir_abs))
+                file_items.append(_create_file_item(src, output_dir_abs, export_format=export_format))
 
     batch_task = {
         "batch_id": batch_id,
@@ -92,8 +93,11 @@ def create_batch_task(source_type, sources, output_dir, config, options=None):
     return batch_task
 
 
-def _create_file_item(json_path, output_dir, base_dir=None):
+def _create_file_item(json_path, output_dir, base_dir=None, export_format="excel"):
+    from multi_exporter import get_format_extension
+
     output_dir_abs = os.path.abspath(output_dir)
+    ext = get_format_extension(export_format)
 
     if base_dir:
         base_dir_abs = os.path.abspath(base_dir)
@@ -108,24 +112,25 @@ def _create_file_item(json_path, output_dir, base_dir=None):
             rel_path = os.path.basename(json_path)
 
         base_name = os.path.splitext(rel_path)[0]
-        excel_path = os.path.join(output_dir_abs, base_name + ".xlsx")
+        output_path = os.path.join(output_dir_abs, base_name + ext)
     else:
         base_name = os.path.splitext(os.path.basename(json_path))[0]
-        excel_path = os.path.join(output_dir_abs, base_name + ".xlsx")
+        output_path = os.path.join(output_dir_abs, base_name + ext)
 
-    excel_path_abs = os.path.abspath(excel_path)
+    output_path_abs = os.path.abspath(output_path)
     try:
-        common = os.path.commonpath([output_dir_abs, excel_path_abs])
+        common = os.path.commonpath([output_dir_abs, output_path_abs])
         if common != output_dir_abs:
             safe_name = os.path.splitext(os.path.basename(json_path))[0]
-            excel_path_abs = os.path.join(output_dir_abs, safe_name + ".xlsx")
+            output_path_abs = os.path.join(output_dir_abs, safe_name + ext)
     except ValueError:
         safe_name = os.path.splitext(os.path.basename(json_path))[0]
-        excel_path_abs = os.path.join(output_dir_abs, safe_name + ".xlsx")
+        output_path_abs = os.path.join(output_dir_abs, safe_name + ext)
 
     return {
         "json_path": os.path.abspath(json_path),
-        "excel_path": excel_path_abs,
+        "output_path": output_path_abs,
+        "excel_path": output_path_abs,
         "status": TASK_STATUS_PENDING,
         "data_count": 0,
         "error": None,

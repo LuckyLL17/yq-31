@@ -5,8 +5,50 @@ import copy
 
 DEFAULT_CONFIG = {
     "json_file_path": "./data/sample_data.json",
+    "export_format": "excel",
     "excel_output_path": "./output/result.xlsx",
+    "csv_output_path": "./output/result.csv",
+    "tsv_output_path": "./output/result.tsv",
+    "html_output_path": "./output/result.html",
+    "markdown_output_path": "./output/result.md",
+    "json_output_path": "./output/result.json",
+    "pdf_output_path": "./output/result.pdf",
     "sheet_name": "数据导出",
+    "csv_config": {
+        "encoding": "utf-8-sig",
+        "delimiter": ",",
+        "include_header": True,
+        "quote_char": '"',
+        "quoting": "minimal",
+    },
+    "tsv_config": {
+        "encoding": "utf-8-sig",
+        "include_header": True,
+    },
+    "html_config": {
+        "title": "数据导出",
+        "include_index": False,
+        "pretty_print": True,
+        "style": "default",
+        "custom_css": "",
+    },
+    "markdown_config": {
+        "title": "数据导出",
+        "include_index": False,
+        "max_col_width": 50,
+    },
+    "json_config": {
+        "indent": 2,
+        "ensure_ascii": False,
+        "include_labels": False,
+    },
+    "pdf_config": {
+        "title": "数据导出",
+        "include_index": False,
+        "page_size": "A4",
+        "orientation": "portrait",
+        "font_size": 10,
+    },
     "default_headers": [
         {"key": "id", "label": "ID", "width": 10},
         {"key": "name", "label": "姓名", "width": 15},
@@ -99,8 +141,16 @@ def validate_config(config):
     if not config.get("json_file_path"):
         errors.append("JSON文件路径不能为空")
 
-    if not config.get("excel_output_path"):
-        errors.append("Excel输出路径不能为空")
+    export_format = config.get("export_format", "excel")
+    valid_formats = {"excel", "csv", "tsv", "html", "markdown", "json", "pdf"}
+    if export_format not in valid_formats:
+        errors.append(f"导出格式无效，应为: {', '.join(sorted(valid_formats))}")
+
+    output_path_key = f"{export_format}_output_path"
+    if export_format == "excel":
+        output_path_key = "excel_output_path"
+    if not config.get(output_path_key):
+        errors.append(f"{export_format.upper()}输出路径不能为空")
 
     headers = config.get("default_headers", [])
     if not isinstance(headers, list):

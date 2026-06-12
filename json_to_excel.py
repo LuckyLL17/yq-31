@@ -224,7 +224,7 @@ def export_to_excel(data, headers, config):
         if validation_result.aborted:
             print(f"\n❌ 校验中止，导出已取消: {validation_result.abort_reason}")
             _print_validation_errors(validation_result, data, max_display=10)
-            return
+            return None
 
         if validation_result.skipped_rows:
             print(f"  将跳过 {len(validation_result.skipped_rows)} 行校验不通过的数据")
@@ -232,7 +232,7 @@ def export_to_excel(data, headers, config):
         valid_data, removed = apply_validation_to_export(data, validation_result, headers)
         if valid_data is None:
             print("\n❌ 校验中止，导出已取消")
-            return
+            return None
 
         new_indices = []
         for idx in range(len(data)):
@@ -281,6 +281,7 @@ def export_to_excel(data, headers, config):
         print()
     else:
         print(f"共导出 {len(data)} 条数据，{len(headers)} 个字段")
+    return output_path
 
 
 def _apply_validation_marks(ws, validation_result, headers, original_indices):
@@ -336,7 +337,7 @@ def _print_validation_errors(validation_result, data, max_display=10):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="JSON 转 Excel 工具")
+    parser = argparse.ArgumentParser(description="JSON 数据导出工具（支持 Excel/CSV/TSV/HTML/Markdown/JSON/PDF）")
     parser.add_argument(
         "-w", "--wizard",
         action="store_true",
@@ -363,7 +364,19 @@ def parse_args():
         "-o", "--output",
         type=str,
         default=None,
-        help="指定输出 Excel 文件路径",
+        help="指定输出文件路径",
+    )
+    parser.add_argument(
+        "-f", "--format",
+        type=str,
+        default=None,
+        choices=["excel", "csv", "tsv", "html", "markdown", "json", "pdf"],
+        help="指定导出格式 (excel/csv/tsv/html/markdown/json/pdf)",
+    )
+    parser.add_argument(
+        "--list-formats",
+        action="store_true",
+        help="列出所有支持的导出格式",
     )
     parser.add_argument(
         "--save-config",
@@ -471,23 +484,38 @@ def parse_args():
 
 
 def apply_cli_overrides(config, args):
+    from multi_exporter import get_format_extension
+
     if args.input:
         config["json_file_path"] = args.input
+    if args.format:
+        config["export_format"] = args.format
     if args.output:
-        config["excel_output_path"] = args.output
+        fmt = config.get("export_format", "excel")
+        if fmt == "excel":
+            config["excel_output_path"] = args.output
+        else:
+            config[f"{fmt}_output_path"] = args.output
     return config
 
 
 def run_with_config(config, data=None):
+    from multi_exporter import export_data, EXPORT_FORMATS
+
+    export_fmt = config.get("export_format", "excel")
+    fmt_info = EXPORT_FORMATS.get(export_fmt, {})
+    output_key = f"{export_fmt}_output_path" if export_fmt != "excel" else "excel_output_path"
+
     print("=" * 50)
-    print("JSON 转 Excel 工具")
+    print(f"JSON 数据导出工具 - {fmt_info.get('label', export_fmt.upper())}")
     print("=" * 50)
 
     json_path = config["json_file_path"]
-    excel_path = config["excel_output_path"]
+    output_path = config.get(output_key, "")
 
     print(f"JSON文件路径: {json_path}")
-    print(f"Excel输出路径: {excel_path}")
+    print(f"输出格式: {fmt_info.get('label', export_fmt.upper())}")
+    print(f"输出路径: {output_path}")
     print()
 
     try:
@@ -504,13 +532,15 @@ def run_with_config(config, data=None):
         print(f"最终使用 {len(headers)} 个字段")
         print()
 
-        export_to_excel(
+        export_data(
             data=data,
             headers=headers,
             config=config,
+            fmt=export_fmt,
         )
 
-        prompt_save_as_template(config)
+        if export_fmt == "excel":
+            prompt_save_as_template(config)
 
     except FileNotFoundError as e:
         print(f"错误: {e}")
@@ -708,6 +738,17 @@ def _handle_batch_operations(args):
 def main():
     args = parse_args()
 
+    if args.list_formats:
+        from multi_exporter import EXPORT_FORMATS
+        print("=" * 70)
+        print("支持的导出格式")
+        print("=" * 70)
+        for fmt_id, fmt_info in EXPORT_FORMATS.items():
+            print(f"\n  {fmt_id:10s} - {fmt_info['label']}")
+            print(f"              {fmt_info['description']}")
+        print("\n使用 -f/--format 参数指定格式，例如: python json_to_excel.py -f csv")
+        return
+
     if _handle_batch_operations(args):
         return
 
@@ -780,13 +821,16 @@ def main():
 
     if args.preview:
         from data_previewer import start_preview_mode
+        from multi_exporter import export_data
         result = start_preview_mode(config)
-        if result is not None and prompt_confirm_execute_after_preview():
+        if result is not None and prompt_confirm_execute_after_preview(config):
             export_config = copy.deepcopy(config)
             auto_headers = auto_detect_headers(result)
             headers = merge_headers(config.get("default_headers", []), auto_headers, config)
-            export_to_excel(data=result, headers=headers, config=export_config)
-            prompt_save_as_template(export_config)
+            export_fmt = config.get("export_format", "excel")
+            export_data(data=result, headers=headers, config=export_config, fmt=export_fmt)
+            if export_fmt == "excel":
+                prompt_save_as_template(export_config)
         return
 
     errors = validate_config(config)
@@ -802,13 +846,16 @@ def main():
 
     if prompt_confirm_preview():
         from data_previewer import start_preview_mode
+        from multi_exporter import export_data
         result = start_preview_mode(config)
-        if result is not None and prompt_confirm_execute_after_preview():
+        if result is not None and prompt_confirm_execute_after_preview(config):
             export_config = copy.deepcopy(config)
             auto_headers = auto_detect_headers(result)
             headers = merge_headers(config.get("default_headers", []), auto_headers, config)
-            export_to_excel(data=result, headers=headers, config=export_config)
-            prompt_save_as_template(export_config)
+            export_fmt = config.get("export_format", "excel")
+            export_data(data=result, headers=headers, config=export_config, fmt=export_fmt)
+            if export_fmt == "excel":
+                prompt_save_as_template(export_config)
         return
 
     run_with_config(config)
@@ -835,9 +882,15 @@ def prompt_confirm_execute():
         print("  ⚠️  请输入 y 或 n")
 
 
-def prompt_confirm_execute_after_preview():
+def prompt_confirm_execute_after_preview(config=None):
+    from multi_exporter import EXPORT_FORMATS
+    export_fmt = "excel"
+    if config:
+        export_fmt = config.get("export_format", "excel")
+    fmt_label = EXPORT_FORMATS.get(export_fmt, {}).get("label", export_fmt.upper())
+
     while True:
-        user_input = input("\n预览完成！是否导出筛选后的数据到 Excel？ (Y/n): ").strip().lower()
+        user_input = input(f"\n预览完成！是否导出筛选后的数据到 {fmt_label}？ (Y/n): ").strip().lower()
         if not user_input or user_input in ("y", "yes"):
             return True
         if user_input in ("n", "no"):

@@ -5,7 +5,8 @@ import sys
 import signal
 from datetime import datetime
 
-from json_to_excel import load_json, auto_detect_headers, merge_headers, export_to_excel
+from json_to_excel import load_json, auto_detect_headers, merge_headers
+from multi_exporter import export_data
 from task_manager import (
     create_batch_task,
     load_batch_task,
@@ -39,13 +40,17 @@ class BatchProcessor:
         self._stop_requested = True
 
     def process_file(self, file_item, config, options=None):
+        from multi_exporter import get_format_extension
+
         options = options or {}
         json_path = file_item["json_path"]
-        excel_path = file_item["excel_path"]
+        export_fmt = config.get("export_format", "excel")
+        ext = get_format_extension(export_fmt)
+        output_path = file_item.get("output_path") or file_item.get("excel_path")
         self._current_json_path = json_path
 
         skip_existing = options.get("skip_existing", False)
-        if skip_existing and os.path.exists(excel_path):
+        if skip_existing and os.path.exists(output_path):
             update_file_status(self.batch_task, json_path, TASK_STATUS_SKIPPED)
             if self.on_file_complete:
                 self.on_file_complete(file_item, 0)
@@ -63,9 +68,10 @@ class BatchProcessor:
             headers = merge_headers(config.get("default_headers", []), auto_headers, config)
 
             file_config = copy.deepcopy(config)
-            file_config["excel_output_path"] = excel_path
+            output_key = f"{export_fmt}_output_path" if export_fmt != "excel" else "excel_output_path"
+            file_config[output_key] = output_path
 
-            output_dir = os.path.dirname(excel_path)
+            output_dir = os.path.dirname(output_path)
             if output_dir and not os.path.exists(output_dir):
                 batch_output_dir = os.path.abspath(self.batch_task.get("output_dir", "./output"))
                 try:
@@ -74,10 +80,11 @@ class BatchProcessor:
                         os.makedirs(output_dir, exist_ok=True)
                     else:
                         output_dir = batch_output_dir
-                        safe_name = os.path.splitext(os.path.basename(excel_path))[0]
-                        excel_path = os.path.join(batch_output_dir, safe_name + ".xlsx")
-                        file_config["excel_output_path"] = excel_path
-                        file_item["excel_path"] = excel_path
+                        safe_name = os.path.splitext(os.path.basename(output_path))[0]
+                        output_path = os.path.join(batch_output_dir, safe_name + ext)
+                        file_config[output_key] = output_path
+                        file_item["output_path"] = output_path
+                        file_item["excel_path"] = output_path
                         if not os.path.exists(output_dir):
                             os.makedirs(output_dir, exist_ok=True)
                 except ValueError:
@@ -85,7 +92,7 @@ class BatchProcessor:
                     if not os.path.exists(output_dir):
                         os.makedirs(output_dir, exist_ok=True)
 
-            export_to_excel(data=data, headers=headers, config=file_config)
+            export_data(data=data, headers=headers, config=file_config, fmt=export_fmt)
 
             update_file_status(self.batch_task, json_path, TASK_STATUS_COMPLETED, data_count=len(data))
 

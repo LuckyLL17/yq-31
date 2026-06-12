@@ -36,9 +36,10 @@ from style_template_manager import (
 )
 
 from json_to_excel import load_json, auto_detect_headers, flatten_dict
+from multi_exporter import EXPORT_FORMATS, get_default_output_path
 
 
-TOTAL_STEPS = 7
+TOTAL_STEPS = 8
 
 
 class ConfigWizard:
@@ -54,12 +55,12 @@ class ConfigWizard:
     def run(self):
         while True:
             clear_screen()
-            print_title("JSON 转 Excel - 交互式配置向导")
+            print_title("JSON 数据导出 - 交互式配置向导")
             print("\n欢迎使用配置向导！我们将引导您完成所有设置。\n")
 
             self.current_step = 0
             should_load_config = prompt_confirm("是否加载已有配置文件？", default=True)
-            self.total_steps = 7 + (1 if should_load_config else 0)
+            self.total_steps = 8 + (1 if should_load_config else 0)
 
             if should_load_config:
                 self._next_step()
@@ -82,6 +83,9 @@ class ConfigWizard:
 
             self._next_step()
             self.step_configure_styles()
+
+            self._next_step()
+            self.step_select_export_format()
 
             self._next_step()
             if self.step_review_and_confirm():
@@ -368,23 +372,35 @@ class ConfigWizard:
 
     def step_configure_styles(self):
         clear_screen()
-        print_step(self.current_step, self.total_steps, "配置导出样式")
+        export_fmt = self.config.get("export_format", "excel")
 
+        if export_fmt == "excel":
+            print_step(self.current_step, self.total_steps, "配置 Excel 导出样式")
+            self._config_excel_styles()
+        else:
+            print_step(self.current_step, self.total_steps, "配置通用选项")
+            self._config_general_title()
+
+        print("\n✅ 配置完成")
+        input("\n按回车继续...")
+
+    def _config_general_title(self):
+        for cfg_key in ["html_config", "markdown_config", "pdf_config"]:
+            cfg = self.config.setdefault(cfg_key, {})
+            cfg["title"] = prompt_input(
+                "请输入导出文档标题",
+                default=cfg.get("title", "数据导出"),
+            )
+
+    def _config_excel_styles(self):
         self.config["sheet_name"] = prompt_input(
             "请输入工作表名称",
             default=self.config.get("sheet_name", "数据导出"),
         )
 
-        self.config["excel_output_path"] = prompt_file_path(
-            "请输入 Excel 输出文件路径",
-            default=self.config.get("excel_output_path", "./output/result.xlsx"),
-            file_filter=".xlsx",
-            must_exist=False,
-        )
-
         while True:
             clear_screen()
-            print_step(self.current_step, self.total_steps, "配置导出样式")
+            print_step(self.current_step, self.total_steps, "配置 Excel 导出样式")
 
             print("\n样式快捷操作:")
             print("  1. 应用样式模板")
@@ -424,21 +440,240 @@ class ConfigWizard:
                 self._config_data_style()
                 input("\n按回车继续...")
 
-        print("\n✅ 样式配置完成")
+    def step_select_export_format(self):
+        clear_screen()
+        print_step(self.current_step, self.total_steps, "选择导出格式")
+
+        print("\n支持的导出格式:")
+        format_list = []
+        for idx, (fmt_id, fmt_info) in enumerate(EXPORT_FORMATS.items(), 1):
+            print(f"  {idx:2d}. {fmt_info['label']:20s} - {fmt_info['description']}")
+            format_list.append(fmt_id)
+
+        default_fmt = self.config.get("export_format", "excel")
+        default_idx = format_list.index(default_fmt) if default_fmt in format_list else 0
+
+        fmt_idx = prompt_number(
+            "\n请选择导出格式",
+            min_value=1,
+            max_value=len(format_list),
+            default=default_idx + 1,
+        ) - 1
+        selected_fmt = format_list[fmt_idx]
+        self.config["export_format"] = selected_fmt
+        fmt_info = EXPORT_FORMATS[selected_fmt]
+
+        output_key = f"{selected_fmt}_output_path" if selected_fmt != "excel" else "excel_output_path"
+        default_path = self.config.get(output_key, get_default_output_path(selected_fmt))
+        self.config[output_key] = prompt_file_path(
+            f"请输入 {fmt_info['label'].split('(')[0].strip()} 输出文件路径",
+            default=default_path,
+            file_filter=fmt_info["extension"],
+            must_exist=False,
+        )
+
+        if prompt_confirm(f"\n是否配置 {fmt_info['label'].split('(')[0].strip()} 的高级选项？", default=False):
+            self._config_format_options(selected_fmt)
+
+        print(f"\n✅ 已选择导出格式: {fmt_info['label']}")
         input("\n按回车继续...")
+
+    def _config_format_options(self, fmt):
+        if fmt == "csv":
+            self._config_csv_options()
+        elif fmt == "tsv":
+            self._config_tsv_options()
+        elif fmt == "html":
+            self._config_html_options()
+        elif fmt == "markdown":
+            self._config_markdown_options()
+        elif fmt == "json":
+            self._config_json_options()
+        elif fmt == "pdf":
+            self._config_pdf_options()
+        elif fmt == "excel":
+            print("\nExcel 的样式选项已在之前步骤中配置")
+
+    def _config_csv_options(self):
+        cfg = self.config.setdefault("csv_config", {})
+        print("\nCSV 配置选项:")
+        cfg["encoding"] = prompt_choice(
+            "文件编码",
+            [
+                ("utf-8-sig", "UTF-8 with BOM (Excel 兼容，推荐)"),
+                ("utf-8", "UTF-8"),
+                ("gbk", "GBK (简体中文 Windows)"),
+                ("gb18030", "GB18030"),
+            ],
+            default_index=0 if cfg.get("encoding", "utf-8-sig") == "utf-8-sig" else 0,
+        )
+        cfg["delimiter"] = prompt_choice(
+            "字段分隔符",
+            [
+                (",", "逗号 (,)"),
+                (";", "分号 (;)"),
+                ("\t", "制表符 (Tab)"),
+                ("|", "竖线 (|)"),
+            ],
+            default_index=0,
+        )
+        cfg["include_header"] = prompt_confirm(
+            "包含表头行？",
+            default=cfg.get("include_header", True),
+        )
+        cfg["quoting"] = prompt_choice(
+            "引号策略",
+            [
+                ("minimal", "仅在需要时使用引号 (推荐)"),
+                ("all", "所有字段都加引号"),
+                ("nonnumeric", "非数字字段加引号"),
+                ("none", "不使用引号"),
+            ],
+            default_index=0,
+        )
+
+    def _config_tsv_options(self):
+        cfg = self.config.setdefault("tsv_config", {})
+        print("\nTSV 配置选项:")
+        cfg["encoding"] = prompt_choice(
+            "文件编码",
+            [
+                ("utf-8-sig", "UTF-8 with BOM (推荐)"),
+                ("utf-8", "UTF-8"),
+                ("gbk", "GBK"),
+            ],
+            default_index=0,
+        )
+        cfg["include_header"] = prompt_confirm(
+            "包含表头行？",
+            default=cfg.get("include_header", True),
+        )
+
+    def _config_html_options(self):
+        cfg = self.config.setdefault("html_config", {})
+        print("\nHTML 配置选项:")
+        cfg["title"] = prompt_input(
+            "页面标题",
+            default=cfg.get("title", "数据导出"),
+        )
+        cfg["include_index"] = prompt_confirm(
+            "显示行号列？",
+            default=cfg.get("include_index", False),
+        )
+        cfg["pretty_print"] = prompt_confirm(
+            "格式化 HTML 源码（缩进换行）？",
+            default=cfg.get("pretty_print", True),
+        )
+        cfg["style"] = prompt_choice(
+            "页面样式",
+            [
+                ("default", "默认美观样式 (推荐)"),
+                ("compact", "紧凑样式"),
+                ("none", "无样式"),
+            ],
+            default_index=0,
+        )
+        if prompt_confirm("是否使用自定义 CSS？", default=False):
+            cfg["custom_css"] = prompt_input(
+                "输入自定义 CSS 内容（留空清除）",
+                default=cfg.get("custom_css", ""),
+                required=False,
+            )
+        else:
+            cfg["custom_css"] = ""
+
+    def _config_markdown_options(self):
+        cfg = self.config.setdefault("markdown_config", {})
+        print("\nMarkdown 配置选项:")
+        cfg["title"] = prompt_input(
+            "文档标题",
+            default=cfg.get("title", "数据导出"),
+        )
+        cfg["include_index"] = prompt_confirm(
+            "显示行号列？",
+            default=cfg.get("include_index", False),
+        )
+        cfg["max_col_width"] = prompt_number(
+            "单元格最大字符宽度（超出截断）",
+            default=cfg.get("max_col_width", 50),
+            min_value=10,
+            max_value=500,
+        )
+
+    def _config_json_options(self):
+        cfg = self.config.setdefault("json_config", {})
+        print("\nJSON 配置选项:")
+        indent_opt = prompt_choice(
+            "格式化缩进",
+            [
+                (2, "2 空格 (推荐)"),
+                (4, "4 空格"),
+                (0, "不缩进（压缩）"),
+            ],
+            default_index=0,
+        )
+        cfg["indent"] = indent_opt
+        cfg["ensure_ascii"] = prompt_confirm(
+            "转义非 ASCII 字符（中文转为 \\uXXXX）？",
+            default=cfg.get("ensure_ascii", False),
+        )
+        cfg["include_labels"] = prompt_confirm(
+            "使用字段标签（label）作为键名？否则使用原始 key",
+            default=cfg.get("include_labels", False),
+        )
+
+    def _config_pdf_options(self):
+        cfg = self.config.setdefault("pdf_config", {})
+        print("\nPDF 配置选项:")
+        cfg["title"] = prompt_input(
+            "文档标题",
+            default=cfg.get("title", "数据导出"),
+        )
+        cfg["include_index"] = prompt_confirm(
+            "显示行号列？",
+            default=cfg.get("include_index", False),
+        )
+        cfg["page_size"] = prompt_choice(
+            "纸张大小",
+            [
+                ("A4", "A4 (推荐)"),
+                ("letter", "Letter"),
+            ],
+            default_index=0,
+        )
+        cfg["orientation"] = prompt_choice(
+            "页面方向",
+            [
+                ("portrait", "纵向 (Portrait)"),
+                ("landscape", "横向 (Landscape)"),
+            ],
+            default_index=0,
+        )
+        cfg["font_size"] = prompt_number(
+            "正文字号",
+            default=cfg.get("font_size", 10),
+            min_value=6,
+            max_value=24,
+        )
 
     def step_review_and_confirm(self):
         clear_screen()
         print_title("配置确认")
 
+        export_fmt = self.config.get("export_format", "excel")
+        fmt_info = EXPORT_FORMATS.get(export_fmt, {})
+        output_key = f"{export_fmt}_output_path" if export_fmt != "excel" else "excel_output_path"
+
         print("\n当前配置摘要:")
         print(f"\n  JSON 文件: {self.config['json_file_path']}")
-        print(f"  输出文件: {self.config['excel_output_path']}")
-        print(f"  工作表名: {self.config['sheet_name']}")
+        print(f"  导出格式: {fmt_info.get('label', export_fmt)}")
+        print(f"  输出文件: {self.config.get(output_key, '未设置')}")
         print(f"  导出字段: {len(self.config['default_headers'])} 个")
         print(f"  自动检测新字段: {'是' if self.config['auto_detect_headers'] else '否'}")
-        print(f"  表头样式: {'启用' if self.config['style_header'] else '禁用'}")
-        print(f"  隔行变色: {'启用' if self.config['style_alt_rows'] else '禁用'}")
+        if export_fmt == "excel":
+            print(f"  工作表名: {self.config['sheet_name']}")
+            print(f"  表头样式: {'启用' if self.config['style_header'] else '禁用'}")
+            print(f"  隔行变色: {'启用' if self.config['style_alt_rows'] else '禁用'}")
 
         validation_rules = self.config.get("validation_rules", [])
         if validation_rules:

@@ -158,9 +158,16 @@ def prompt_file_path(message, default=None, file_filter=None, must_exist=True, r
             return False, f"文件不存在: {path}"
         if must_exist and not os.path.isfile(path):
             return False, f"路径不是文件: {path}"
-        if file_filter and isinstance(file_filter, str):
-            if not path.lower().endswith(file_filter.lower()):
-                return False, f"请选择 {file_filter} 格式的文件"
+        if file_filter:
+            if isinstance(file_filter, str):
+                filters = [file_filter]
+            else:
+                filters = list(file_filter)
+            path_lower = path.lower()
+            matched = any(path_lower.endswith(f.lower()) for f in filters)
+            if not matched:
+                filter_str = "/".join(filters)
+                return False, f"请选择 {filter_str} 格式的文件"
         return True, None
 
     return prompt_input(message, default=default, validator=validator, required=required)
