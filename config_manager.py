@@ -88,6 +88,7 @@ DEFAULT_CONFIG = {
     },
     "validation_rules": [],
     "validation_on_fail_default": "mark",
+    "conditional_format_rules": [],
     "split_config": {
         "enabled": False,
         "split_field": "",
@@ -237,6 +238,23 @@ def validate_config(config):
                         errors.append(f"第 {ci + 1} 个 custom_rule 缺少 name 属性")
                     if "values" not in rule and "condition" not in rule and "min" not in rule:
                         errors.append(f"第 {ci + 1} 个 custom_rule 缺少匹配条件（values/condition/min-max）")
+
+    conditional_format_rules = config.get("conditional_format_rules", [])
+    if not isinstance(conditional_format_rules, list):
+        errors.append("条件格式规则格式错误，应为列表")
+    else:
+        from style_template_manager import (
+            validate_conditional_rule,
+            CF_RULE_TYPES,
+            CF_STYLE_FIELDS,
+        )
+        for i, rule in enumerate(conditional_format_rules):
+            if not isinstance(rule, dict):
+                errors.append(f"第 {i + 1} 条条件格式规则格式错误")
+                continue
+            is_valid, rule_error = validate_conditional_rule(rule)
+            if not is_valid:
+                errors.append(f"第 {i + 1} 条条件格式规则错误: {rule_error}")
 
     pivot_config = config.get("pivot_config", {})
     if pivot_config.get("enabled"):

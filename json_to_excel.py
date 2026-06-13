@@ -165,6 +165,86 @@ def apply_data_style(ws, headers, data_rows_count, config):
                 cell.fill = alt_fill
 
 
+def apply_conditional_formatting(ws, headers, data, config):
+    """
+    应用条件格式规则到单元格
+
+    Args:
+        ws: Worksheet 对象
+        headers: 字段配置列表
+        data: 原始数据列表
+        config: 配置字典
+    """
+    from style_template_manager import (
+        match_conditional_rules_for_field,
+        merge_conditional_styles,
+    )
+
+    rules = config.get("conditional_format_rules", [])
+    if not rules:
+        return
+
+    header_key_to_idx = {}
+    for col_idx, header in enumerate(headers, start=1):
+        header_key_to_idx[header["key"]] = col_idx
+
+    data_style = config.get("data_style", {})
+    base_font_name = data_style.get("font_name", "Microsoft YaHei")
+    base_font_size = data_style.get("font_size", 11)
+
+    applied_count = 0
+    for row_idx, item in enumerate(data, start=2):
+        if not isinstance(item, dict):
+            continue
+
+        for header in headers:
+            field_key = header["key"]
+            col_idx = header_key_to_idx.get(field_key)
+            if col_idx is None:
+                continue
+
+            value = extract_value(item, field_key)
+            matched_rules = match_conditional_rules_for_field(field_key, value, rules)
+
+            if not matched_rules:
+                continue
+
+            merged_style = merge_conditional_styles(matched_rules)
+            if not merged_style:
+                continue
+
+            cell = ws.cell(row=row_idx, column=col_idx)
+
+            font_kwargs = {
+                "name": base_font_name,
+                "size": base_font_size,
+            }
+
+            if "font_name" in merged_style:
+                font_kwargs["name"] = merged_style["font_name"]
+            if "font_size" in merged_style:
+                font_kwargs["size"] = merged_style["font_size"]
+            if "font_bold" in merged_style:
+                font_kwargs["bold"] = merged_style["font_bold"]
+            if "font_italic" in merged_style:
+                font_kwargs["italic"] = merged_style["font_italic"]
+            if "font_color" in merged_style:
+                font_kwargs["color"] = merged_style["font_color"].replace("#", "")
+            if "underline" in merged_style:
+                font_kwargs["underline"] = merged_style["underline"]
+
+            cell.font = Font(**font_kwargs)
+
+            if "bg_color" in merged_style:
+                bg_color = merged_style["bg_color"].replace("#", "")
+                cell.fill = PatternFill(start_color=bg_color, end_color=bg_color, fill_type="solid")
+
+            applied_count += 1
+
+    if applied_count > 0:
+        print(f"  🎨 已应用 {applied_count} 处条件格式")
+
+
 def set_column_widths(ws, headers):
     for idx, header in enumerate(headers, start=1):
         width = header.get("width", 15)
@@ -381,6 +461,8 @@ def _write_sheet_data(ws, data, headers, config, original_indices=None, validati
 
     apply_data_style(ws, headers, len(data), config)
 
+    apply_conditional_formatting(ws, headers, data, config)
+
     if validation_result and validation_result.marked_rows and original_indices is not None:
         _apply_validation_marks(ws, validation_result, headers, original_indices)
 
@@ -553,6 +635,8 @@ def export_to_excel(data, headers, config):
         apply_header_style(ws, header_cells, config)
 
     apply_data_style(ws, headers, len(data), config)
+
+    apply_conditional_formatting(ws, headers, data, config)
 
     if validation_result and validation_result.marked_rows:
         _apply_validation_marks(ws, validation_result, headers, original_indices)
@@ -894,10 +978,18 @@ def handle_template_operations(args, config):
             alt_color = template.get("data_style", {}).get("alt_row_color", "#FFFFFF")
             border_style = template.get("header_style", {}).get("border_style", "thin")
             border_name = get_border_style_name(border_style) if border_style else "无"
+            cf_rules = template.get("conditional_format_rules", [])
+            cf_count = len([r for r in cf_rules if r.get("enabled", True)])
             print(f"\n{template_id}{builtin_tag}")
             print(f"  名称: {template.get('name', '未命名')}")
             print(f"  描述: {template.get('description', '无描述')}")
             print(f"  表头背景: {header_bg} | 隔行色: {alt_color} | 边框: {border_name}")
+            if cf_count > 0:
+                print(f"  条件格式规则: {cf_count} 条")
+                for rule in cf_rules:
+                    if rule.get("enabled", True):
+                        from style_template_manager import get_rule_description
+                        print(f"    • {get_rule_description(rule)}")
         return True
 
     if args.template_manager:
