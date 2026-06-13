@@ -101,6 +101,7 @@ DEFAULT_CONFIG = {
         "range_groups": [],
         "custom_rules": [],
     },
+    "computed_columns": [],
     "pivot_config": {
         "enabled": False,
         "sheet_name": "数据透视表",
@@ -255,6 +256,18 @@ def validate_config(config):
             is_valid, rule_error = validate_conditional_rule(rule)
             if not is_valid:
                 errors.append(f"第 {i + 1} 条条件格式规则错误: {rule_error}")
+
+    computed_columns = config.get("computed_columns", [])
+    if not isinstance(computed_columns, list):
+        errors.append("计算列配置格式错误，应为列表")
+    else:
+        from computed_columns import validate_computed_column
+        for i, cc in enumerate(computed_columns):
+            if not isinstance(cc, dict):
+                errors.append(f"第 {i + 1} 个计算列配置格式错误，应为字典")
+                continue
+            cc_errors = validate_computed_column(cc, i)
+            errors.extend(cc_errors)
 
     pivot_config = config.get("pivot_config", {})
     if pivot_config.get("enabled"):

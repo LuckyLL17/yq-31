@@ -6,6 +6,7 @@ import html
 from datetime import datetime
 
 from json_to_excel import extract_value, flatten_dict
+from computed_columns import apply_computed_columns
 
 
 EXPORT_FORMATS = {
@@ -56,14 +57,17 @@ def get_default_output_path(fmt, base_dir="./output"):
     return os.path.join(base_dir, f"result{ext}")
 
 
-def _prepare_rows(data, headers):
+def _prepare_rows(data, headers, computed_cache=None):
     rows = []
     for item in data:
         if not isinstance(item, dict):
             continue
         row = []
         for h in headers:
-            val = extract_value(item, h["key"])
+            if computed_cache and h["key"] in computed_cache.get(id(item), {}):
+                val = computed_cache[id(item)][h["key"]]
+            else:
+                val = extract_value(item, h["key"])
             if val is None:
                 val = ""
             row.append(val)
@@ -71,7 +75,7 @@ def _prepare_rows(data, headers):
     return rows
 
 
-def export_to_csv(data, headers, config):
+def export_to_csv(data, headers, config, computed_cache=None):
     output_path = config.get("csv_output_path") or config.get("output_path", "./output/result.csv")
     csv_config = config.get("csv_config", {})
     encoding = csv_config.get("encoding", "utf-8-sig")
@@ -91,7 +95,7 @@ def export_to_csv(data, headers, config):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    rows = _prepare_rows(data, headers)
+    rows = _prepare_rows(data, headers, computed_cache=computed_cache)
 
     with open(output_path, "w", encoding=encoding, newline="") as f:
         writer = csv.writer(
@@ -109,7 +113,7 @@ def export_to_csv(data, headers, config):
     return output_path
 
 
-def export_to_tsv(data, headers, config):
+def export_to_tsv(data, headers, config, computed_cache=None):
     output_path = config.get("tsv_output_path") or config.get("output_path", "./output/result.tsv")
     tsv_config = config.get("tsv_config", {})
     encoding = tsv_config.get("encoding", "utf-8-sig")
@@ -119,7 +123,7 @@ def export_to_tsv(data, headers, config):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    rows = _prepare_rows(data, headers)
+    rows = _prepare_rows(data, headers, computed_cache=computed_cache)
 
     with open(output_path, "w", encoding=encoding, newline="") as f:
         writer = csv.writer(f, delimiter="\t", quotechar='"', quoting=csv.QUOTE_MINIMAL)
@@ -132,7 +136,7 @@ def export_to_tsv(data, headers, config):
     return output_path
 
 
-def export_to_json(data, headers, config):
+def export_to_json(data, headers, config, computed_cache=None):
     output_path = config.get("json_output_path") or config.get("output_path", "./output/result.json")
     json_config = config.get("json_config", {})
     indent = json_config.get("indent", 2)
@@ -143,30 +147,36 @@ def export_to_json(data, headers, config):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    export_data = []
+    export_data_list = []
     for item in data:
         if not isinstance(item, dict):
             continue
         if include_labels:
             row_obj = {}
             for h in headers:
-                row_obj[h["label"]] = extract_value(item, h["key"])
-            export_data.append(row_obj)
+                if computed_cache and h["key"] in computed_cache.get(id(item), {}):
+                    row_obj[h["label"]] = computed_cache[id(item)][h["key"]]
+                else:
+                    row_obj[h["label"]] = extract_value(item, h["key"])
+            export_data_list.append(row_obj)
         else:
             row_obj = {}
             for h in headers:
-                row_obj[h["key"]] = extract_value(item, h["key"])
-            export_data.append(row_obj)
+                if computed_cache and h["key"] in computed_cache.get(id(item), {}):
+                    row_obj[h["key"]] = computed_cache[id(item)][h["key"]]
+                else:
+                    row_obj[h["key"]] = extract_value(item, h["key"])
+            export_data_list.append(row_obj)
 
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(export_data, f, ensure_ascii=ensure_ascii, indent=indent if indent > 0 else None)
+        json.dump(export_data_list, f, ensure_ascii=ensure_ascii, indent=indent if indent > 0 else None)
 
     print(f"JSON 文件已成功导出: {os.path.abspath(output_path)}")
-    print(f"共导出 {len(export_data)} 条数据，{len(headers)} 个字段")
+    print(f"共导出 {len(export_data_list)} 条数据，{len(headers)} 个字段")
     return output_path
 
 
-def export_to_markdown(data, headers, config):
+def export_to_markdown(data, headers, config, computed_cache=None):
     output_path = config.get("markdown_output_path") or config.get("output_path", "./output/result.md")
     md_config = config.get("markdown_config", {})
     title = md_config.get("title", "数据导出")
@@ -177,7 +187,7 @@ def export_to_markdown(data, headers, config):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    rows = _prepare_rows(data, headers)
+    rows = _prepare_rows(data, headers, computed_cache=computed_cache)
 
     def _truncate(s, width):
         s = str(s)
@@ -219,7 +229,7 @@ def export_to_markdown(data, headers, config):
     return output_path
 
 
-def export_to_html(data, headers, config):
+def export_to_html(data, headers, config, computed_cache=None):
     output_path = config.get("html_output_path") or config.get("output_path", "./output/result.html")
     html_config = config.get("html_config", {})
     title = html_config.get("title", "数据导出")
@@ -232,7 +242,7 @@ def export_to_html(data, headers, config):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    rows = _prepare_rows(data, headers)
+    rows = _prepare_rows(data, headers, computed_cache=computed_cache)
 
     default_css = """
     <style>
@@ -323,7 +333,7 @@ def export_to_html(data, headers, config):
     return output_path
 
 
-def export_to_pdf(data, headers, config):
+def export_to_pdf(data, headers, config, computed_cache=None):
     output_path = config.get("pdf_output_path") or config.get("output_path", "./output/result.pdf")
     pdf_config = config.get("pdf_config", {})
     title = pdf_config.get("title", "数据导出")
@@ -336,7 +346,7 @@ def export_to_pdf(data, headers, config):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    rows = _prepare_rows(data, headers)
+    rows = _prepare_rows(data, headers, computed_cache=computed_cache)
 
     try:
         from reportlab.lib import colors
@@ -350,7 +360,7 @@ def export_to_pdf(data, headers, config):
         print("⚠️  PDF 导出需要安装 reportlab 库")
         print("请运行: pip install reportlab")
         print("正在尝试使用 HTML 中转方式...")
-        return _export_pdf_via_html(data, headers, config, output_path, title, include_index)
+        return _export_pdf_via_html(data, headers, config, output_path, title, include_index, computed_cache=computed_cache)
 
     try:
         font_paths = [
@@ -469,7 +479,7 @@ def export_to_pdf(data, headers, config):
     return output_path
 
 
-def _export_pdf_via_html(data, headers, config, output_path, title, include_index):
+def _export_pdf_via_html(data, headers, config, output_path, title, include_index, computed_cache=None):
     try:
         import weasyprint
     except ImportError:
@@ -481,7 +491,7 @@ def _export_pdf_via_html(data, headers, config, output_path, title, include_inde
     temp_config = dict(config)
     temp_config["html_output_path"] = html_path
     temp_config["html_config"] = config.get("pdf_config", {})
-    export_to_html(data, headers, temp_config)
+    export_to_html(data, headers, temp_config, computed_cache=computed_cache)
 
     weasyprint.HTML(filename=html_path).write_pdf(output_path)
 
@@ -498,20 +508,29 @@ def export_data(data, headers, config, fmt=None):
     if fmt is None:
         fmt = config.get("export_format", "excel")
 
+    computed_cache = None
+    computed_columns = config.get("computed_columns", [])
+    if computed_columns:
+        enabled_cc = [cc for cc in computed_columns if cc.get("enabled", True)]
+        if enabled_cc:
+            print(f"正在计算 {len(enabled_cc)} 个计算列...")
+            computed_cache, headers = apply_computed_columns(data, headers, config, extract_value)
+            print(f"  已添加 {len(enabled_cc)} 个计算列: {', '.join(cc['label'] for cc in enabled_cc)}\n")
+
     if fmt == "excel":
         from json_to_excel import export_to_excel
         return export_to_excel(data, headers, config)
     elif fmt == "csv":
-        return export_to_csv(data, headers, config)
+        return export_to_csv(data, headers, config, computed_cache=computed_cache)
     elif fmt == "tsv":
-        return export_to_tsv(data, headers, config)
+        return export_to_tsv(data, headers, config, computed_cache=computed_cache)
     elif fmt == "html":
-        return export_to_html(data, headers, config)
+        return export_to_html(data, headers, config, computed_cache=computed_cache)
     elif fmt == "markdown":
-        return export_to_markdown(data, headers, config)
+        return export_to_markdown(data, headers, config, computed_cache=computed_cache)
     elif fmt == "json":
-        return export_to_json(data, headers, config)
+        return export_to_json(data, headers, config, computed_cache=computed_cache)
     elif fmt == "pdf":
-        return export_to_pdf(data, headers, config)
+        return export_to_pdf(data, headers, config, computed_cache=computed_cache)
     else:
         raise ValueError(f"不支持的导出格式: {fmt}")

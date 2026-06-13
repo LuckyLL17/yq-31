@@ -25,6 +25,7 @@ from data_validator import (
     MARK_BG_COLOR,
     ON_FAIL_LABELS,
 )
+from computed_columns import apply_computed_columns, evaluate_computed_column
 
 
 def load_json(file_path):
@@ -443,14 +444,19 @@ def split_data_by_field(data, split_field, split_config):
     return groups
 
 
-def _write_sheet_data(ws, data, headers, config, original_indices=None, validation_result=None):
+def _write_sheet_data(ws, data, headers, config, original_indices=None, validation_result=None, computed_cache=None):
     header_labels = [h["label"] for h in headers]
     ws.append(header_labels)
 
     for item in data:
         if not isinstance(item, dict):
             continue
-        row = [extract_value(item, h["key"]) for h in headers]
+        row = []
+        for h in headers:
+            if computed_cache and h["key"] in computed_cache.get(id(item), {}):
+                row.append(computed_cache[id(item)][h["key"]])
+            else:
+                row.append(extract_value(item, h["key"]))
         ws.append(row)
 
     set_column_widths(ws, headers)
@@ -469,7 +475,7 @@ def _write_sheet_data(ws, data, headers, config, original_indices=None, validati
     ws.freeze_panes = "A2"
 
 
-def export_to_excel_with_split(data, headers, config, validation_result=None, original_indices=None):
+def export_to_excel_with_split(data, headers, config, validation_result=None, original_indices=None, computed_cache=None):
     output_path = config["excel_output_path"]
     sheet_name = config.get("sheet_name", "数据导出")
     split_config = config.get("split_config", {})
@@ -505,6 +511,7 @@ def export_to_excel_with_split(data, headers, config, validation_result=None, or
             config,
             original_indices=original_indices,
             validation_result=validation_result,
+            computed_cache=computed_cache,
         )
 
     used_names = set()
@@ -543,11 +550,12 @@ def export_to_excel_with_split(data, headers, config, validation_result=None, or
             config,
             original_indices=group_orig_indices,
             validation_result=validation_result,
+            computed_cache=computed_cache,
         )
 
     if len(wb.sheetnames) == 0:
         ws = wb.create_sheet(_sanitize_sheet_name(sheet_name, max_sheet_len))
-        _write_sheet_data(ws, data, headers, config)
+        _write_sheet_data(ws, data, headers, config, computed_cache=computed_cache)
 
     add_pivot_table_to_workbook(wb, data, headers, config)
 
@@ -605,6 +613,15 @@ def export_to_excel(data, headers, config):
         data = valid_data
         print(f"  校验后有效数据: {len(data)} 条\n")
 
+    computed_cache = None
+    computed_columns = config.get("computed_columns", [])
+    if computed_columns:
+        enabled_cc = [cc for cc in computed_columns if cc.get("enabled", True)]
+        if enabled_cc:
+            print(f"正在计算 {len(enabled_cc)} 个计算列...")
+            computed_cache, headers = apply_computed_columns(data, headers, config, extract_value)
+            print(f"  已添加 {len(enabled_cc)} 个计算列: {', '.join(cc['label'] for cc in enabled_cc)}\n")
+
     split_config = config.get("split_config", {})
     if split_config.get("enabled") and split_config.get("split_field"):
         return export_to_excel_with_split(
@@ -613,6 +630,7 @@ def export_to_excel(data, headers, config):
             config=config,
             validation_result=validation_result,
             original_indices=original_indices,
+            computed_cache=computed_cache,
         )
 
     wb = Workbook()
@@ -625,7 +643,12 @@ def export_to_excel(data, headers, config):
     for item in data:
         if not isinstance(item, dict):
             continue
-        row = [extract_value(item, h["key"]) for h in headers]
+        row = []
+        for h in headers:
+            if computed_cache and h["key"] in computed_cache.get(id(item), {}):
+                row.append(computed_cache[id(item)][h["key"]])
+            else:
+                row.append(extract_value(item, h["key"]))
         ws.append(row)
 
     set_column_widths(ws, headers)
@@ -856,6 +879,11 @@ def parse_args():
         "--validate-only",
         action="store_true",
         help="仅执行数据校验，不导出Excel",
+    )
+    parser.add_argument(
+        "--computed-columns",
+        action="store_true",
+        help="启动交互式计算列配置",
     )
     return parser.parse_args()
 
@@ -1166,6 +1194,20 @@ def main():
             _print_validation_errors(result, data)
         except Exception as e:
             print(f"校验执行失败: {e}")
+        return
+
+    if args.computed_columns:
+        from computed_columns_wizard import run_computed_columns_wizard
+        config = load_config(args.config) if args.config else get_default_config()
+        try:
+            data = load_json(config["json_file_path"])
+            auto_headers = auto_detect_headers(data)
+            config = run_computed_columns_wizard(config, available_fields=auto_headers)
+        except Exception:
+            config = run_computed_columns_wizard(config)
+        if args.save_config:
+            save_config(config, args.save_config)
+            print(f"\n配置已保存到: {os.path.abspath(args.save_config)}")
         return
 
     if args.wizard:
