@@ -100,6 +100,18 @@ DEFAULT_CONFIG = {
         "range_groups": [],
         "custom_rules": [],
     },
+    "pivot_config": {
+        "enabled": False,
+        "sheet_name": "数据透视表",
+        "row_fields": [],
+        "column_fields": [],
+        "value_fields": [],
+        "show_row_totals": True,
+        "show_column_totals": True,
+        "grand_total_label": "总计",
+        "empty_value_label": "(空白)",
+        "apply_style": True,
+    },
 }
 
 CONFIG_FILE_PATH = "./config.json"
@@ -225,6 +237,42 @@ def validate_config(config):
                         errors.append(f"第 {ci + 1} 个 custom_rule 缺少 name 属性")
                     if "values" not in rule and "condition" not in rule and "min" not in rule:
                         errors.append(f"第 {ci + 1} 个 custom_rule 缺少匹配条件（values/condition/min-max）")
+
+    pivot_config = config.get("pivot_config", {})
+    if pivot_config.get("enabled"):
+        valid_aggregates = {
+            "sum", "count", "average", "max", "min",
+            "product", "count_num", "stddev", "stddevp", "var", "varp"
+        }
+
+        row_fields = pivot_config.get("row_fields", [])
+        if not isinstance(row_fields, list):
+            errors.append("透视表 row_fields 格式错误，应为列表")
+        elif len(row_fields) == 0:
+            errors.append("启用透视表时至少需要配置一个行字段 (row_fields)")
+
+        column_fields = pivot_config.get("column_fields", [])
+        if not isinstance(column_fields, list):
+            errors.append("透视表 column_fields 格式错误，应为列表")
+
+        value_fields = pivot_config.get("value_fields", [])
+        if not isinstance(value_fields, list):
+            errors.append("透视表 value_fields 格式错误，应为列表")
+        elif len(value_fields) == 0:
+            errors.append("启用透视表时至少需要配置一个值字段 (value_fields)")
+        else:
+            for vi, vf in enumerate(value_fields):
+                if not isinstance(vf, dict):
+                    errors.append(f"第 {vi + 1} 个 value_field 格式错误，应为字典")
+                    continue
+                if "field" not in vf or not vf["field"]:
+                    errors.append(f"第 {vi + 1} 个 value_field 缺少 field 属性")
+                agg = vf.get("aggregate", "sum")
+                if agg not in valid_aggregates:
+                    errors.append(
+                        f"第 {vi + 1} 个 value_field 的 aggregate 无效，"
+                        f"应为: {', '.join(sorted(valid_aggregates))}"
+                    )
 
     return errors
 

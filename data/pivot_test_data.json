@@ -1,0 +1,22 @@
+[
+    {"id": 1, "name": "张三", "department": "技术部", "position": "高级工程师", "salary": 18000, "city": "北京", "age": 28},
+    {"id": 2, "name": "李四", "department": "技术部", "position": "高级工程师", "salary": 20000, "city": "北京", "age": 30},
+    {"id": 3, "name": "王五", "department": "技术部", "position": "初级工程师", "salary": 12000, "city": "上海", "age": 24},
+    {"id": 4, "name": "赵六", "department": "技术部", "position": "初级工程师", "salary": 13000, "city": "深圳", "age": 25},
+    {"id": 5, "name": "钱七", "department": "技术部", "position": "技术经理", "salary": 35000, "city": "北京", "age": 35},
+    {"id": 6, "name": "孙八", "department": "产品部", "position": "产品经理", "salary": 22000, "city": "上海", "age": 32},
+    {"id": 7, "name": "周九", "department": "产品部", "position": "产品经理", "salary": 25000, "city": "北京", "age": 33},
+    {"id": 8, "name": "吴十", "department": "产品部", "position": "产品助理", "salary": 10000, "city": "深圳", "age": 23},
+    {"id": 9, "name": "郑一", "department": "设计部", "position": "UI设计师", "salary": 15000, "city": "广州", "age": 26},
+    {"id": 10, "name": "王二", "department": "设计部", "position": "UI设计师", "salary": 17000, "city": "北京", "age": 28},
+    {"id": 11, "name": "冯三", "department": "设计部", "position": "设计总监", "salary": 30000, "city": "上海", "age": 36},
+    {"id": 12, "name": "陈四", "department": "市场部", "position": "市场专员", "salary": 12000, "city": "广州", "age": 25},
+    {"id": 13, "name": "褚五", "department": "市场部", "position": "市场专员", "salary": 13000, "city": "深圳", "age": 26},
+    {"id": 14, "name": "卫六", "department": "市场部", "position": "市场总监", "salary": 32000, "city": "北京", "age": 38},
+    {"id": 15, "name": "蒋七", "department": "财务部", "position": "会计", "salary": 10000, "city": "上海", "age": 27},
+    {"id": 16, "name": "沈八", "department": "财务部", "position": "财务主管", "salary": 20000, "city": "北京", "age": 34},
+    {"id": 17, "name": "韩九", "department": "人事部", "position": "HR专员", "salary": 9000, "city": "广州", "age": 24},
+    {"id": 18, "name": "杨十", "department": "人事部", "position": "HR经理", "salary": 18000, "city": "北京", "age": 32},
+    {"id": 19, "name": "朱一", "department": "技术部", "position": "测试工程师", "salary": 14000, "city": "上海", "age": 27},
+    {"id": 20, "name": "秦二", "department": "技术部", "position": "测试工程师", "salary": 15000, "city": "深圳", "age": 28}
+]

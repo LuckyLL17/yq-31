@@ -467,6 +467,8 @@ def export_to_excel_with_split(data, headers, config, validation_result=None, or
         ws = wb.create_sheet(_sanitize_sheet_name(sheet_name, max_sheet_len))
         _write_sheet_data(ws, data, headers, config)
 
+    add_pivot_table_to_workbook(wb, data, headers, config)
+
     wb.save(output_path)
     print(f"Excel文件已成功导出: {os.path.abspath(output_path)}")
     print(f"共 {len(wb.sheetnames)} 个工作表，{len(data)} 条数据，{len(headers)} 个字段")
@@ -556,6 +558,8 @@ def export_to_excel(data, headers, config):
         _apply_validation_marks(ws, validation_result, headers, original_indices)
 
     ws.freeze_panes = "A2"
+
+    add_pivot_table_to_workbook(wb, data, headers, config)
 
     wb.save(output_path)
     print(f"Excel文件已成功导出: {os.path.abspath(output_path)}")
@@ -1185,6 +1189,589 @@ def prompt_confirm_execute_after_preview(config=None):
         if user_input in ("n", "no"):
             return False
         print("  ⚠️  请输入 y 或 n")
+
+
+def _to_numeric(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _aggregate_values(values, aggregate_func):
+    numeric_values = [v for v in values if _to_numeric(v) is not None]
+    nums = [_to_numeric(v) for v in numeric_values]
+
+    if aggregate_func == "sum":
+        return sum(nums) if nums else 0
+    elif aggregate_func == "count":
+        return len(values)
+    elif aggregate_func == "count_num":
+        return len(nums)
+    elif aggregate_func == "average":
+        return sum(nums) / len(nums) if nums else 0
+    elif aggregate_func == "max":
+        return max(nums) if nums else 0
+    elif aggregate_func == "min":
+        return min(nums) if nums else 0
+    elif aggregate_func == "product":
+        if not nums:
+            return 0
+        result = 1
+        for n in nums:
+            result *= n
+        return result
+    elif aggregate_func == "stddev":
+        if len(nums) < 2:
+            return 0
+        mean = sum(nums) / len(nums)
+        variance = sum((x - mean) ** 2 for x in nums) / (len(nums) - 1)
+        return variance ** 0.5
+    elif aggregate_func == "stddevp":
+        if not nums:
+            return 0
+        mean = sum(nums) / len(nums)
+        variance = sum((x - mean) ** 2 for x in nums) / len(nums)
+        return variance ** 0.5
+    elif aggregate_func == "var":
+        if len(nums) < 2:
+            return 0
+        mean = sum(nums) / len(nums)
+        return sum((x - mean) ** 2 for x in nums) / (len(nums) - 1)
+    elif aggregate_func == "varp":
+        if not nums:
+            return 0
+        mean = sum(nums) / len(nums)
+        return sum((x - mean) ** 2 for x in nums) / len(nums)
+    else:
+        return sum(nums) if nums else 0
+
+
+def _get_field_label(headers, field_key):
+    for h in headers:
+        if h["key"] == field_key:
+            return h["label"]
+    return field_key
+
+
+def _get_row_key(item, row_fields, empty_label):
+    key_parts = []
+    for field in row_fields:
+        val = extract_value(item, field)
+        if val is None or val == "":
+            val = empty_label
+        key_parts.append(str(val))
+    return tuple(key_parts)
+
+
+def _get_col_key(item, col_fields, empty_label):
+    if not col_fields:
+        return ("",)
+    key_parts = []
+    for field in col_fields:
+        val = extract_value(item, field)
+        if val is None or val == "":
+            val = empty_label
+        key_parts.append(str(val))
+    return tuple(key_parts)
+
+
+def build_pivot_table(data, pivot_config, headers):
+    row_fields = pivot_config.get("row_fields", [])
+    col_fields = pivot_config.get("column_fields", [])
+    value_fields = pivot_config.get("value_fields", [])
+    empty_label = pivot_config.get("empty_value_label", "(空白)")
+
+    row_keys = []
+    row_keys_order = []
+    col_keys = []
+    col_keys_order = []
+
+    pivot_data = {}
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+
+        rk = _get_row_key(item, row_fields, empty_label)
+        ck = _get_col_key(item, col_fields, empty_label)
+
+        if rk not in row_keys_order:
+            row_keys_order.append(rk)
+        if ck not in col_keys_order:
+            col_keys_order.append(ck)
+
+        if rk not in pivot_data:
+            pivot_data[rk] = {}
+        if ck not in pivot_data[rk]:
+            pivot_data[rk][ck] = {}
+
+        for vf in value_fields:
+            field_name = vf["field"]
+            agg_func = vf.get("aggregate", "sum")
+            vf_key = f"{field_name}:{agg_func}"
+
+            if vf_key not in pivot_data[rk][ck]:
+                pivot_data[rk][ck][vf_key] = []
+
+            val = extract_value(item, field_name)
+            pivot_data[rk][ck][vf_key].append(val)
+
+    result = {
+        "row_fields": row_fields,
+        "col_fields": col_fields,
+        "value_fields": value_fields,
+        "row_keys": row_keys_order,
+        "col_keys": col_keys_order,
+        "data": pivot_data,
+        "empty_label": empty_label,
+    }
+
+    return result
+
+
+def _compute_pivot_value(pivot_result, rk, ck, vf):
+    field_name = vf["field"]
+    agg_func = vf.get("aggregate", "sum")
+    vf_key = f"{field_name}:{agg_func}"
+
+    data = pivot_result["data"]
+    if rk in data and ck in data[rk] and vf_key in data[rk][ck]:
+        values = data[rk][ck][vf_key]
+        return _aggregate_values(values, agg_func)
+    return 0
+
+
+def _compute_row_total(pivot_result, rk, vf):
+    total = 0
+    agg_func = vf.get("aggregate", "sum")
+
+    if agg_func in ("count", "count_num", "sum"):
+        for ck in pivot_result["col_keys"]:
+            total += _compute_pivot_value(pivot_result, rk, ck, vf)
+    elif agg_func == "average":
+        all_values = []
+        field_name = vf["field"]
+        vf_key = f"{field_name}:{agg_func}"
+        data = pivot_result["data"]
+        for ck in pivot_result["col_keys"]:
+            if rk in data and ck in data[rk] and vf_key in data[rk][ck]:
+                all_values.extend(data[rk][ck][vf_key])
+        total = _aggregate_values(all_values, agg_func)
+    elif agg_func == "max":
+        max_val = None
+        for ck in pivot_result["col_keys"]:
+            v = _compute_pivot_value(pivot_result, rk, ck, vf)
+            if max_val is None or v > max_val:
+                max_val = v
+        total = max_val if max_val is not None else 0
+    elif agg_func == "min":
+        min_val = None
+        for ck in pivot_result["col_keys"]:
+            v = _compute_pivot_value(pivot_result, rk, ck, vf)
+            if min_val is None or v < min_val:
+                min_val = v
+        total = min_val if min_val is not None else 0
+    else:
+        for ck in pivot_result["col_keys"]:
+            total += _compute_pivot_value(pivot_result, rk, ck, vf)
+
+    return total
+
+
+def _compute_col_total(pivot_result, ck, vf):
+    total = 0
+    agg_func = vf.get("aggregate", "sum")
+
+    if agg_func in ("count", "count_num", "sum"):
+        for rk in pivot_result["row_keys"]:
+            total += _compute_pivot_value(pivot_result, rk, ck, vf)
+    elif agg_func == "average":
+        all_values = []
+        field_name = vf["field"]
+        vf_key = f"{field_name}:{agg_func}"
+        data = pivot_result["data"]
+        for rk in pivot_result["row_keys"]:
+            if rk in data and ck in data[rk] and vf_key in data[rk][ck]:
+                all_values.extend(data[rk][ck][vf_key])
+        total = _aggregate_values(all_values, agg_func)
+    elif agg_func == "max":
+        max_val = None
+        for rk in pivot_result["row_keys"]:
+            v = _compute_pivot_value(pivot_result, rk, ck, vf)
+            if max_val is None or v > max_val:
+                max_val = v
+        total = max_val if max_val is not None else 0
+    elif agg_func == "min":
+        min_val = None
+        for rk in pivot_result["row_keys"]:
+            v = _compute_pivot_value(pivot_result, rk, ck, vf)
+            if min_val is None or v < min_val:
+                min_val = v
+        total = min_val if min_val is not None else 0
+    else:
+        for rk in pivot_result["row_keys"]:
+            total += _compute_pivot_value(pivot_result, rk, ck, vf)
+
+    return total
+
+
+def _compute_grand_total(pivot_result, vf):
+    total = 0
+    agg_func = vf.get("aggregate", "sum")
+
+    if agg_func in ("count", "count_num", "sum"):
+        for rk in pivot_result["row_keys"]:
+            total += _compute_row_total(pivot_result, rk, vf)
+    elif agg_func == "average":
+        all_values = []
+        field_name = vf["field"]
+        vf_key = f"{field_name}:{agg_func}"
+        data = pivot_result["data"]
+        for rk in pivot_result["row_keys"]:
+            for ck in pivot_result["col_keys"]:
+                if rk in data and ck in data[rk] and vf_key in data[rk][ck]:
+                    all_values.extend(data[rk][ck][vf_key])
+        total = _aggregate_values(all_values, agg_func)
+    elif agg_func == "max":
+        max_val = None
+        for rk in pivot_result["row_keys"]:
+            v = _compute_row_total(pivot_result, rk, vf)
+            if max_val is None or v > max_val:
+                max_val = v
+        total = max_val if max_val is not None else 0
+    elif agg_func == "min":
+        min_val = None
+        for rk in pivot_result["row_keys"]:
+            v = _compute_row_total(pivot_result, rk, vf)
+            if min_val is None or v < min_val:
+                min_val = v
+        total = min_val if min_val is not None else 0
+    else:
+        for rk in pivot_result["row_keys"]:
+            total += _compute_row_total(pivot_result, rk, vf)
+
+    return total
+
+
+def _format_value(value, agg_func):
+    if isinstance(value, float):
+        if value == int(value):
+            return int(value)
+        return round(value, 2)
+    return value
+
+
+def create_pivot_sheet(wb, pivot_result, pivot_config, headers):
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+
+    sheet_name = pivot_config.get("sheet_name", "数据透视表")
+    safe_name = _sanitize_sheet_name(sheet_name)
+    ws = wb.create_sheet(safe_name)
+
+    row_fields = pivot_result["row_fields"]
+    col_fields = pivot_result["col_fields"]
+    value_fields = pivot_result["value_fields"]
+    row_keys = pivot_result["row_keys"]
+    col_keys = pivot_result["col_keys"]
+    show_row_totals = pivot_config.get("show_row_totals", True)
+    show_col_totals = pivot_config.get("show_column_totals", True)
+    grand_total_label = pivot_config.get("grand_total_label", "总计")
+    apply_style = pivot_config.get("apply_style", True)
+
+    num_row_fields = len(row_fields)
+    num_col_fields = len(col_fields)
+    num_value_fields = len(value_fields)
+
+    has_col_fields = len(col_fields) > 0
+
+    if has_col_fields:
+        header_row_count = num_col_fields
+        if num_value_fields > 1:
+            header_row_count += 1
+    else:
+        header_row_count = 1 if num_value_fields > 1 else 0
+
+    data_start_row = header_row_count + 1
+
+    if has_col_fields:
+        total_col_groups = len(col_keys) + (1 if show_col_totals else 0)
+        col_header_end_col = num_row_fields + total_col_groups * num_value_fields
+
+        for ci, cf in enumerate(col_fields):
+            for c in range(num_row_fields + 1, col_header_end_col + 1):
+                cell = ws.cell(row=ci + 1, column=c)
+                if c == num_row_fields + 1:
+                    cell.value = _get_field_label(headers, cf)
+                if apply_style:
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+
+        value_header_row = num_col_fields + 1
+
+        col_start_col = num_row_fields + 1
+        for cki, ck in enumerate(col_keys):
+            group_start = col_start_col + cki * num_value_fields
+            group_end = group_start + num_value_fields - 1
+
+            if num_value_fields > 1:
+                for c in range(group_start, group_end + 1):
+                    cell = ws.cell(row=num_col_fields, column=c)
+                    if c == group_start:
+                        cell.value = " / ".join(ck)
+                    if apply_style:
+                        cell.font = Font(bold=True)
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                        cell.fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+
+            for vfi, vf in enumerate(value_fields):
+                cell = ws.cell(row=value_header_row, column=group_start + vfi)
+                if num_value_fields == 1:
+                    cell.value = " / ".join(ck)
+                else:
+                    label = vf.get("label") or _get_field_label(headers, vf["field"])
+                    agg_label = _get_aggregate_label(vf.get("aggregate", "sum"))
+                    cell.value = f"{label}({agg_label})"
+                if apply_style:
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+
+        if show_col_totals:
+            total_start_col = col_start_col + len(col_keys) * num_value_fields
+            total_end_col = total_start_col + num_value_fields - 1
+
+            for c in range(total_start_col, total_end_col + 1):
+                cell = ws.cell(row=num_col_fields, column=c)
+                if c == total_start_col:
+                    cell.value = grand_total_label
+                if apply_style:
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+
+            for vfi, vf in enumerate(value_fields):
+                cell = ws.cell(row=value_header_row, column=total_start_col + vfi)
+                if num_value_fields > 1:
+                    label = vf.get("label") or _get_field_label(headers, vf["field"])
+                    agg_label = _get_aggregate_label(vf.get("aggregate", "sum"))
+                    cell.value = f"{label}({agg_label})"
+                else:
+                    cell.value = grand_total_label
+                if apply_style:
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+    else:
+        if num_value_fields > 1:
+            for vfi, vf in enumerate(value_fields):
+                cell = ws.cell(row=1, column=num_row_fields + 1 + vfi)
+                label = vf.get("label") or _get_field_label(headers, vf["field"])
+                agg_label = _get_aggregate_label(vf.get("aggregate", "sum"))
+                cell.value = f"{label}({agg_label})"
+                if apply_style:
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+
+    for rfi, rf in enumerate(row_fields):
+        cell = ws.cell(row=data_start_row - 1, column=rfi + 1)
+        cell.value = _get_field_label(headers, rf)
+        if apply_style:
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+
+    if has_col_fields:
+        for r in range(1, data_start_row):
+            for c in range(1, num_row_fields + 1):
+                cell = ws.cell(row=r, column=c)
+                if apply_style:
+                    cell.fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+
+    for rki, rk in enumerate(row_keys):
+        row_idx = data_start_row + rki
+        for rfi, rv in enumerate(rk):
+            cell = ws.cell(row=row_idx, column=rfi + 1)
+            cell.value = rv
+            if apply_style:
+                cell.alignment = Alignment(vertical="center")
+                if rki % 2 == 1:
+                    cell.fill = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
+
+        if has_col_fields:
+            col_start_col = num_row_fields + 1
+            for cki, ck in enumerate(col_keys):
+                if num_value_fields > 1:
+                    for vfi, vf in enumerate(value_fields):
+                        cell = ws.cell(row=row_idx, column=col_start_col + cki * num_value_fields + vfi)
+                        val = _compute_pivot_value(pivot_result, rk, ck, vf)
+                        cell.value = _format_value(val, vf.get("aggregate", "sum"))
+                        if apply_style:
+                            cell.alignment = Alignment(horizontal="right", vertical="center")
+                            if rki % 2 == 1:
+                                cell.fill = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
+                else:
+                    cell = ws.cell(row=row_idx, column=col_start_col + cki)
+                    vf = value_fields[0]
+                    val = _compute_pivot_value(pivot_result, rk, ck, vf)
+                    cell.value = _format_value(val, vf.get("aggregate", "sum"))
+                    if apply_style:
+                        cell.alignment = Alignment(horizontal="right", vertical="center")
+                        if rki % 2 == 1:
+                            cell.fill = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
+
+            if show_row_totals:
+                if num_value_fields > 1:
+                    total_start_col = col_start_col + len(col_keys) * num_value_fields
+                    for vfi, vf in enumerate(value_fields):
+                        cell = ws.cell(row=row_idx, column=total_start_col + vfi)
+                        val = _compute_row_total(pivot_result, rk, vf)
+                        cell.value = _format_value(val, vf.get("aggregate", "sum"))
+                        if apply_style:
+                            cell.font = Font(bold=True)
+                            cell.alignment = Alignment(horizontal="right", vertical="center")
+                            cell.fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+                else:
+                    total_col = col_start_col + len(col_keys)
+                    cell = ws.cell(row=row_idx, column=total_col)
+                    vf = value_fields[0]
+                    val = _compute_row_total(pivot_result, rk, vf)
+                    cell.value = _format_value(val, vf.get("aggregate", "sum"))
+                    if apply_style:
+                        cell.font = Font(bold=True)
+                        cell.alignment = Alignment(horizontal="right", vertical="center")
+                        cell.fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+        else:
+            for vfi, vf in enumerate(value_fields):
+                cell = ws.cell(row=row_idx, column=num_row_fields + 1 + vfi)
+                val = _compute_pivot_value(pivot_result, rk, ("",), vf)
+                cell.value = _format_value(val, vf.get("aggregate", "sum"))
+                if apply_style:
+                    cell.alignment = Alignment(horizontal="right", vertical="center")
+                    if rki % 2 == 1:
+                        cell.fill = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
+
+    if show_col_totals and has_col_fields:
+        total_row_idx = data_start_row + len(row_keys)
+        label_cell = ws.cell(row=total_row_idx, column=1)
+        label_cell.value = grand_total_label
+        if num_row_fields > 1:
+            pass
+
+        col_start_col = num_row_fields + 1
+        for cki, ck in enumerate(col_keys):
+            if num_value_fields > 1:
+                for vfi, vf in enumerate(value_fields):
+                    cell = ws.cell(row=total_row_idx, column=col_start_col + cki * num_value_fields + vfi)
+                    val = _compute_col_total(pivot_result, ck, vf)
+                    cell.value = _format_value(val, vf.get("aggregate", "sum"))
+                    if apply_style:
+                        cell.font = Font(bold=True)
+                        cell.alignment = Alignment(horizontal="right", vertical="center")
+                        cell.fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+            else:
+                cell = ws.cell(row=total_row_idx, column=col_start_col + cki)
+                vf = value_fields[0]
+                val = _compute_col_total(pivot_result, ck, vf)
+                cell.value = _format_value(val, vf.get("aggregate", "sum"))
+                if apply_style:
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal="right", vertical="center")
+                    cell.fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+
+        if show_row_totals:
+            if num_value_fields > 1:
+                total_start_col = col_start_col + len(col_keys) * num_value_fields
+                for vfi, vf in enumerate(value_fields):
+                    cell = ws.cell(row=total_row_idx, column=total_start_col + vfi)
+                    val = _compute_grand_total(pivot_result, vf)
+                    cell.value = _format_value(val, vf.get("aggregate", "sum"))
+                    if apply_style:
+                        cell.font = Font(bold=True)
+                        cell.alignment = Alignment(horizontal="right", vertical="center")
+                        cell.fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+            else:
+                total_col = col_start_col + len(col_keys)
+                cell = ws.cell(row=total_row_idx, column=total_col)
+                vf = value_fields[0]
+                val = _compute_grand_total(pivot_result, vf)
+                cell.value = _format_value(val, vf.get("aggregate", "sum"))
+                if apply_style:
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal="right", vertical="center")
+                    cell.fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+
+        if apply_style:
+            for c in range(1, num_row_fields + 1):
+                cell = ws.cell(row=total_row_idx, column=c)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+
+    if apply_style:
+        thin_border = Border(
+            left=Side(style="thin", color="CCCCCC"),
+            right=Side(style="thin", color="CCCCCC"),
+            top=Side(style="thin", color="CCCCCC"),
+            bottom=Side(style="thin", color="CCCCCC"),
+        )
+        max_row = ws.max_row
+        max_col = ws.max_column
+        for row in ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
+            for cell in row:
+                cell.border = thin_border
+
+    for col_idx in range(1, ws.max_column + 1):
+        col_letter = chr(64 + col_idx) if col_idx <= 26 else _get_column_letter(col_idx)
+        max_width = 12
+        for row_idx in range(1, min(ws.max_row + 1, 100)):
+            cell_val = ws.cell(row=row_idx, column=col_idx).value
+            if cell_val is not None:
+                cell_len = len(str(cell_val))
+                if cell_len > max_width:
+                    max_width = min(cell_len + 4, 40)
+        ws.column_dimensions[col_letter].width = max_width
+
+    ws.freeze_panes = ws.cell(row=data_start_row, column=num_row_fields + 1)
+
+    return ws
+
+
+def _get_aggregate_label(agg_func):
+    labels = {
+        "sum": "求和",
+        "count": "计数",
+        "average": "平均值",
+        "max": "最大值",
+        "min": "最小值",
+        "product": "乘积",
+        "count_num": "数值计数",
+        "stddev": "标准偏差",
+        "stddevp": "总体标准偏差",
+        "var": "方差",
+        "varp": "总体方差",
+    }
+    return labels.get(agg_func, agg_func)
+
+
+def add_pivot_table_to_workbook(wb, data, headers, config):
+    pivot_config = config.get("pivot_config", {})
+    if not pivot_config.get("enabled"):
+        return None
+
+    try:
+        pivot_result = build_pivot_table(data, pivot_config, headers)
+        ws = create_pivot_sheet(wb, pivot_result, pivot_config, headers)
+        print(f"  📊 已生成数据透视表: {ws.title}")
+        return ws
+    except Exception as e:
+        print(f"  ⚠️  数据透视表生成失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 if __name__ == "__main__":
