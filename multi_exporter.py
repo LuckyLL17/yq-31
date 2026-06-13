@@ -566,3 +566,510 @@ def export_data(data, headers, config, fmt=None):
         return export_to_pdf(data, headers, config, computed_cache=computed_cache)
     else:
         raise ValueError(f"不支持的导出格式: {fmt}")
+
+
+class MultiFormatExporter:
+    def __init__(self, config=None):
+        from config_manager import ExportConfig
+        if config is None:
+            self.config = ExportConfig.from_default()
+        elif isinstance(config, dict):
+            self.config = ExportConfig.from_dict(config)
+        else:
+            self.config = config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(config)
+
+    def _prepare_rows(self, data, headers, computed_cache=None, progress=None, progress_step=1):
+        return _prepare_rows(data, headers, computed_cache, progress, progress_step)
+
+    def export_csv(self, data, headers, computed_cache=None):
+        output_path = self.config.get("csv_output_path") or self.config.get_output_path("csv")
+        csv_config = self.config.get_format_config("csv")
+        encoding = csv_config.get("encoding", "utf-8-sig")
+        delimiter = csv_config.get("delimiter", ",")
+        include_header = csv_config.get("include_header", True)
+        quote_char = csv_config.get("quote_char", '"')
+        quoting = csv_config.get("quoting", "minimal")
+
+        quoting_map = {
+            "all": csv.QUOTE_ALL,
+            "minimal": csv.QUOTE_MINIMAL,
+            "nonnumeric": csv.QUOTE_NONNUMERIC,
+            "none": csv.QUOTE_NONE,
+        }
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        progress = ProgressTracker(total=len(data), description="📝 导出CSV", unit="行")
+        rows = self._prepare_rows(data, headers, computed_cache=computed_cache, progress=progress)
+        progress.finish()
+
+        with open(output_path, "w", encoding=encoding, newline="") as f:
+            writer = csv.writer(
+                f,
+                delimiter=delimiter,
+                quotechar=quote_char,
+                quoting=quoting_map.get(quoting, csv.QUOTE_MINIMAL),
+            )
+            if include_header:
+                writer.writerow([h["label"] for h in headers])
+            writer.writerows(rows)
+
+        print(f"CSV 文件已成功导出: {os.path.abspath(output_path)}")
+        print(f"共导出 {len(rows)} 条数据，{len(headers)} 个字段")
+        return output_path
+
+    def export_tsv(self, data, headers, computed_cache=None):
+        output_path = self.config.get("tsv_output_path") or self.config.get_output_path("tsv")
+        tsv_config = self.config.get_format_config("tsv")
+        encoding = tsv_config.get("encoding", "utf-8-sig")
+        include_header = tsv_config.get("include_header", True)
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        progress = ProgressTracker(total=len(data), description="📝 导出TSV", unit="行")
+        rows = self._prepare_rows(data, headers, computed_cache=computed_cache, progress=progress)
+        progress.finish()
+
+        with open(output_path, "w", encoding=encoding, newline="") as f:
+            writer = csv.writer(f, delimiter="\t", quotechar='"', quoting=csv.QUOTE_MINIMAL)
+            if include_header:
+                writer.writerow([h["label"] for h in headers])
+            writer.writerows(rows)
+
+        print(f"TSV 文件已成功导出: {os.path.abspath(output_path)}")
+        print(f"共导出 {len(rows)} 条数据，{len(headers)} 个字段")
+        return output_path
+
+    def export_json(self, data, headers, computed_cache=None):
+        output_path = self.config.get("json_output_path") or self.config.get_output_path("json")
+        json_config = self.config.get_format_config("json")
+        indent = json_config.get("indent", 2)
+        ensure_ascii = json_config.get("ensure_ascii", False)
+        include_labels = json_config.get("include_labels", False)
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        progress = ProgressTracker(total=len(data), description="📝 导出JSON", unit="行")
+        export_data_list = []
+        for item in data:
+            if not isinstance(item, dict):
+                progress.update()
+                continue
+            if include_labels:
+                row_obj = {}
+                for h_idx, h in enumerate(headers):
+                    if computed_cache and h["key"] in computed_cache.get(id(item), {}):
+                        val = computed_cache[id(item)][h["key"]]
+                    else:
+                        val = extract_value(item, h["key"])
+                    row_obj[h["label"]] = val
+                    if h_idx == 0:
+                        preview_val = str(val) if val is not None else ""
+                        progress.set_field(h["key"])
+                        progress.set_row_preview(preview_val)
+                export_data_list.append(row_obj)
+            else:
+                row_obj = {}
+                for h_idx, h in enumerate(headers):
+                    if computed_cache and h["key"] in computed_cache.get(id(item), {}):
+                        val = computed_cache[id(item)][h["key"]]
+                    else:
+                        val = extract_value(item, h["key"])
+                    row_obj[h["key"]] = val
+                    if h_idx == 0:
+                        preview_val = str(val) if val is not None else ""
+                        progress.set_field(h["key"])
+                        progress.set_row_preview(preview_val)
+                export_data_list.append(row_obj)
+            progress.update()
+        progress.finish()
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(export_data_list, f, ensure_ascii=ensure_ascii, indent=indent if indent > 0 else None)
+
+        print(f"JSON 文件已成功导出: {os.path.abspath(output_path)}")
+        print(f"共导出 {len(export_data_list)} 条数据，{len(headers)} 个字段")
+        return output_path
+
+    def export_markdown(self, data, headers, computed_cache=None):
+        output_path = self.config.get("markdown_output_path") or self.config.get_output_path("markdown")
+        md_config = self.config.get_format_config("markdown")
+        title = md_config.get("title", "数据导出")
+        include_index = md_config.get("include_index", False)
+        max_col_width = md_config.get("max_col_width", 50)
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        progress = ProgressTracker(total=len(data), description="📝 导出Markdown", unit="行")
+        rows = self._prepare_rows(data, headers, computed_cache=computed_cache, progress=progress)
+        progress.finish()
+
+        def _truncate(s, width):
+            s = str(s)
+            if len(s) > width:
+                return s[: width - 3] + "..."
+            return s
+
+        lines = []
+        if title:
+            lines.append(f"# {title}")
+            lines.append("")
+            lines.append(f"> 导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            lines.append(f"> 数据条数: {len(rows)}")
+            lines.append("")
+
+        display_headers = []
+        if include_index:
+            display_headers.append("#")
+        for h in headers:
+            display_headers.append(_truncate(h["label"], max_col_width))
+
+        lines.append("| " + " | ".join(display_headers) + " |")
+        lines.append("| " + " | ".join(["---"] * len(display_headers)) + " |")
+
+        for idx, row in enumerate(rows, 1):
+            display_row = []
+            if include_index:
+                display_row.append(str(idx))
+            for val in row:
+                cell = str(val).replace("\n", " ").replace("|", "\\|")
+                display_row.append(_truncate(cell, max_col_width))
+            lines.append("| " + " | ".join(display_row) + " |")
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+        print(f"Markdown 文件已成功导出: {os.path.abspath(output_path)}")
+        print(f"共导出 {len(rows)} 条数据，{len(headers)} 个字段")
+        return output_path
+
+    def export_html(self, data, headers, computed_cache=None):
+        output_path = self.config.get("html_output_path") or self.config.get_output_path("html")
+        html_config = self.config.get_format_config("html")
+        title = html_config.get("title", "数据导出")
+        include_index = html_config.get("include_index", False)
+        pretty_print = html_config.get("pretty_print", True)
+        style = html_config.get("style", "default")
+        custom_css = html_config.get("custom_css", "")
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        progress = ProgressTracker(total=len(data), description="📝 导出HTML", unit="行")
+        rows = self._prepare_rows(data, headers, computed_cache=computed_cache, progress=progress)
+        progress.finish()
+
+        default_css = """
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif; margin: 20px; }
+        h1 { color: #333; border-bottom: 2px solid #4472C4; padding-bottom: 10px; }
+        .meta { color: #666; margin-bottom: 20px; font-size: 14px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        th { background-color: #4472C4; color: white; padding: 12px 15px; text-align: left; font-weight: bold; }
+        td { padding: 10px 15px; border-bottom: 1px solid #ddd; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        tr:hover { background-color: #f1f1f1; }
+        .summary { margin-top: 20px; color: #666; font-size: 14px; }
+    </style>
+    """
+
+        compact_css = """
+    <style>
+        body { font-family: monospace; margin: 10px; }
+        table { border-collapse: collapse; font-size: 12px; }
+        th, td { border: 1px solid #999; padding: 4px 8px; }
+        th { background: #ccc; }
+    </style>
+    """
+
+        no_style_css = "<style></style>"
+
+        style_map = {
+            "default": default_css,
+            "compact": compact_css,
+            "none": no_style_css,
+        }
+
+        css = style_map.get(style, default_css)
+        if custom_css:
+            css = f"<style>{custom_css}</style>"
+
+        header_cells = []
+        if include_index:
+            header_cells.append("<th>#</th>")
+        for h in headers:
+            header_cells.append(f"<th>{html.escape(str(h['label']))}</th>")
+
+        body_rows = []
+        for idx, row in enumerate(rows, 1):
+            cells = []
+            if include_index:
+                cells.append(f"<td>{idx}</td>")
+            for val in row:
+                cells.append(f"<td>{html.escape(str(val))}</td>")
+            body_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+        indent = "  " if pretty_print else ""
+        newline = "\n" if pretty_print else ""
+
+        html_content = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{html.escape(title)}</title>
+{css}
+</head>
+<body>
+<h1>{html.escape(title)}</h1>
+<div class="meta">
+  <div>导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
+  <div>数据条数: {len(rows)}</div>
+  <div>字段数量: {len(headers)}</div>
+</div>
+<table>
+  <thead>
+    <tr>{newline.join(header_cells)}</tr>
+  </thead>
+  <tbody>
+    {newline.join(body_rows)}
+  </tbody>
+</table>
+<div class="summary">共 {len(rows)} 条记录</div>
+</body>
+</html>
+"""
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+
+        print(f"HTML 文件已成功导出: {os.path.abspath(output_path)}")
+        print(f"共导出 {len(rows)} 条数据，{len(headers)} 个字段")
+        return output_path
+
+    def export_pdf(self, data, headers, computed_cache=None):
+        output_path = self.config.get("pdf_output_path") or self.config.get_output_path("pdf")
+        pdf_config = self.config.get_format_config("pdf")
+        title = pdf_config.get("title", "数据导出")
+        include_index = pdf_config.get("include_index", False)
+        page_size = pdf_config.get("page_size", "A4")
+        orientation = pdf_config.get("orientation", "portrait")
+        font_size = pdf_config.get("font_size", 10)
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        progress = ProgressTracker(total=len(data), description="📝 导出PDF", unit="行")
+        rows = self._prepare_rows(data, headers, computed_cache=computed_cache, progress=progress)
+        progress.finish()
+
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import A4, letter
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import mm
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+        except ImportError:
+            print("⚠️  PDF 导出需要安装 reportlab 库")
+            print("请运行: pip install reportlab")
+            print("正在尝试使用 HTML 中转方式...")
+            return self._export_pdf_via_html(data, headers, output_path, title, include_index, computed_cache=computed_cache)
+
+        try:
+            font_paths = [
+                "/System/Library/Fonts/PingFang.ttc",
+                "/System/Library/Fonts/STHeiti Medium.ttc",
+                "/System/Library/Fonts/Hiragino Sans GB.ttc",
+                "C:/Windows/Fonts/msyh.ttc",
+                "C:/Windows/Fonts/simhei.ttf",
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            ]
+            font_registered = False
+            for fp in font_paths:
+                if os.path.exists(fp):
+                    try:
+                        pdfmetrics.registerFont(TTFont("ChineseFont", fp))
+                        font_registered = True
+                        break
+                    except Exception:
+                        continue
+        except Exception:
+            font_registered = False
+
+        page_size_map = {"A4": A4, "letter": letter}
+        ps = page_size_map.get(page_size, A4)
+        if orientation == "landscape":
+            ps = (ps[1], ps[0])
+
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=ps,
+            rightMargin=20 * mm,
+            leftMargin=20 * mm,
+            topMargin=20 * mm,
+            bottomMargin=20 * mm,
+        )
+
+        styles = getSampleStyleSheet()
+        elements = []
+
+        if font_registered:
+            title_font = "ChineseFont"
+            body_font = "ChineseFont"
+            title_style = ParagraphStyle(
+                "CustomTitle",
+                parent=styles["Title"],
+                fontName=title_font,
+                fontSize=18,
+                spaceAfter=12,
+            )
+            normal_style = ParagraphStyle(
+                "CustomNormal",
+                parent=styles["Normal"],
+                fontName=body_font,
+                fontSize=font_size,
+            )
+        else:
+            title_style = styles["Title"]
+            normal_style = styles["Normal"]
+
+        elements.append(Paragraph(title, title_style))
+        elements.append(Spacer(1, 6 * mm))
+        meta_text = (
+            f"导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  |  "
+            f"数据: {len(rows)} 条  |  字段: {len(headers)} 个"
+        )
+        elements.append(Paragraph(meta_text, normal_style))
+        elements.append(Spacer(1, 8 * mm))
+
+        table_data = []
+        header_row = []
+        if include_index:
+            header_row.append("#")
+        for h in headers:
+            header_row.append(str(h["label"]))
+        table_data.append(header_row)
+
+        for idx, row in enumerate(rows, 1):
+            data_row = []
+            if include_index:
+                data_row.append(str(idx))
+            for val in row:
+                cell = str(val)
+                if len(cell) > 100:
+                    cell = cell[:97] + "..."
+                data_row.append(cell)
+            table_data.append(data_row)
+
+        col_count = len(headers) + (1 if include_index else 0)
+        available_width = ps[0] - 40 * mm
+        col_widths = [available_width / col_count] * col_count
+
+        table = Table(table_data, colWidths=col_widths, repeatRows=1)
+        table_style = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4472C4")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("FONTSIZE", (0, 0), (-1, 0), font_size + 1),
+            ("FONTSIZE", (0, 1), (-1, -1), font_size),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+            ("TOPPADDING", (0, 0), (-1, 0), 8),
+            ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
+            ("TOPPADDING", (0, 1), (-1, -1), 5),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#F9F9F9")]),
+        ]
+        if font_registered:
+            table_style.append(("FONTNAME", (0, 0), (-1, -1), body_font))
+        table.setStyle(TableStyle(table_style))
+        elements.append(table)
+
+        doc.build(elements)
+        print(f"PDF 文件已成功导出: {os.path.abspath(output_path)}")
+        print(f"共导出 {len(rows)} 条数据，{len(headers)} 个字段")
+        return output_path
+
+    def _export_pdf_via_html(self, data, headers, output_path, title, include_index, computed_cache=None):
+        try:
+            import weasyprint
+        except ImportError:
+            print("❌ 无法导出 PDF: 需要安装 reportlab 或 weasyprint")
+            print("请运行: pip install reportlab  或  pip install weasyprint")
+            return None
+
+        html_path = output_path + ".tmp.html"
+        temp_config = dict(self.config.to_dict())
+        temp_config["html_output_path"] = html_path
+        temp_config["html_config"] = self.config.get_format_config("pdf")
+        export_to_html(data, headers, temp_config, computed_cache=computed_cache)
+
+        weasyprint.HTML(filename=html_path).write_pdf(output_path)
+
+        try:
+            os.remove(html_path)
+        except Exception:
+            pass
+
+        print(f"PDF 文件已成功导出 (via HTML): {os.path.abspath(output_path)}")
+        return output_path
+
+    def export(self, data, headers, fmt=None, computed_cache=None):
+        format_to_use = fmt or self.config.export_format
+
+        if format_to_use == "excel":
+            from json_to_excel import ExcelExporter
+            excel_exporter = ExcelExporter(self.config)
+            return excel_exporter.export(data, headers, computed_cache=computed_cache)
+        elif format_to_use == "csv":
+            return self.export_csv(data, headers, computed_cache=computed_cache)
+        elif format_to_use == "tsv":
+            return self.export_tsv(data, headers, computed_cache=computed_cache)
+        elif format_to_use == "html":
+            return self.export_html(data, headers, computed_cache=computed_cache)
+        elif format_to_use == "markdown":
+            return self.export_markdown(data, headers, computed_cache=computed_cache)
+        elif format_to_use == "json":
+            return self.export_json(data, headers, computed_cache=computed_cache)
+        elif format_to_use == "pdf":
+            return self.export_pdf(data, headers, computed_cache=computed_cache)
+        else:
+            raise ValueError(f"不支持的导出格式: {format_to_use}")
+
+    def export_from_loader(self, loader, fmt=None):
+        format_to_use = fmt or self.config.export_format
+
+        if format_to_use == "excel":
+            from json_to_excel import ExcelExporter
+            excel_exporter = ExcelExporter(self.config)
+            return excel_exporter.export_from_loader(loader)
+
+        prepared = loader.prepare_for_export()
+        if prepared is None:
+            return None
+        return self.export(
+            data=prepared["data"],
+            headers=prepared["headers"],
+            fmt=format_to_use,
+            computed_cache=prepared["computed_cache"],
+        )
+
+    def __repr__(self):
+        return f"MultiFormatExporter(format={self.config.export_format})"

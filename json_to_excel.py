@@ -2046,5 +2046,413 @@ def add_pivot_table_to_workbook(wb, data, headers, config):
         return None
 
 
+class DataLoader:
+    def __init__(self, config=None):
+        from config_manager import ExportConfig
+        if config is None:
+            self.config = ExportConfig.from_default()
+        elif isinstance(config, dict):
+            self.config = ExportConfig.from_dict(config)
+        else:
+            self.config = config
+        self._raw_data = None
+        self._auto_headers = None
+        self._merged_headers = None
+        self._computed_cache = None
+        self._validation_result = None
+        self._original_indices = None
+
+    @classmethod
+    def from_file(cls, json_file_path, config=None):
+        loader = cls(config)
+        loader.load(json_file_path)
+        return loader
+
+    def load(self, file_path=None):
+        path = file_path or self.config.json_file_path
+        if not path:
+            raise ValueError("JSON文件路径不能为空")
+        self._raw_data = load_json(path)
+        print(f"已加载 {len(self._raw_data)} 条数据")
+        return self._raw_data
+
+    def set_data(self, data):
+        self._raw_data = data
+        return self
+
+    @property
+    def raw_data(self):
+        if self._raw_data is None:
+            raise ValueError("数据尚未加载，请先调用 load() 方法")
+        return self._raw_data
+
+    def detect_headers(self):
+        if self._raw_data is None:
+            raise ValueError("数据尚未加载，请先调用 load() 方法")
+        self._auto_headers = auto_detect_headers(self._raw_data)
+        print(f"自动检测到 {len(self._auto_headers)} 个字段")
+        return self._auto_headers
+
+    @property
+    def auto_headers(self):
+        if self._auto_headers is None:
+            self.detect_headers()
+        return self._auto_headers
+
+    def merge_headers(self):
+        if self._auto_headers is None:
+            self.detect_headers()
+        self._merged_headers = merge_headers(
+            self.config.default_headers,
+            self._auto_headers,
+            self.config.to_dict()
+        )
+        print(f"最终使用 {len(self._merged_headers)} 个字段")
+        return self._merged_headers
+
+    @property
+    def headers(self):
+        if self._merged_headers is None:
+            self.merge_headers()
+        return self._merged_headers
+
+    def apply_computed_columns(self):
+        from computed_columns import apply_computed_columns
+        computed_columns = self.config.computed_columns
+        if not computed_columns:
+            return None, self.headers
+
+        enabled_cc = [cc for cc in computed_columns if cc.get("enabled", True)]
+        if not enabled_cc:
+            return None, self.headers
+
+        print(f"正在计算 {len(enabled_cc)} 个计算列...")
+        self._computed_cache, self._merged_headers = apply_computed_columns(
+            self.raw_data, self.headers, self.config.to_dict(), extract_value
+        )
+        print(f"  已添加 {len(enabled_cc)} 个计算列: {', '.join(cc['label'] for cc in enabled_cc)}\n")
+        return self._computed_cache, self._merged_headers
+
+    @property
+    def computed_cache(self):
+        return self._computed_cache
+
+    def validate_data(self):
+        from data_validator import validate_data, rules_from_config
+        rules = rules_from_config(self.config.to_dict())
+        if not rules:
+            return None
+
+        print(f"\n正在执行数据校验（{len(rules)} 条规则）...")
+        self._validation_result = validate_data(self.raw_data, rules)
+        print(self._validation_result.summary())
+        return self._validation_result
+
+    @property
+    def validation_result(self):
+        return self._validation_result
+
+    def get_valid_data(self):
+        if self._validation_result is None:
+            self._original_indices = list(range(len(self.raw_data)))
+            return self.raw_data
+
+        if self._validation_result.aborted:
+            print(f"\n❌ 校验中止，导出已取消: {self._validation_result.abort_reason}")
+            _print_validation_errors(self._validation_result, self.raw_data, max_display=10)
+            return None
+
+        from data_validator import apply_validation_to_export
+        valid_data, removed = apply_validation_to_export(
+            self.raw_data, self._validation_result, self.headers
+        )
+        if valid_data is None:
+            print("\n❌ 校验中止，导出已取消")
+            return None
+
+        new_indices = []
+        for idx in range(len(self.raw_data)):
+            if idx not in self._validation_result.skipped_rows:
+                new_indices.append(idx)
+        self._original_indices = new_indices
+
+        skipped_count = len(self._validation_result.skipped_rows)
+        if skipped_count > 0:
+            print(f"  将跳过 {skipped_count} 行校验不通过的数据")
+        print(f"  校验后有效数据: {len(valid_data)} 条\n")
+        return valid_data
+
+    @property
+    def original_indices(self):
+        if self._original_indices is None:
+            self._original_indices = list(range(len(self.raw_data)))
+        return self._original_indices
+
+    def prepare_for_export(self):
+        if self._raw_data is None:
+            self.load()
+        if self._merged_headers is None:
+            self.merge_headers()
+
+        validation_result = self.validate_data()
+        valid_data = self.get_valid_data()
+        if valid_data is None:
+            return None
+
+        self.apply_computed_columns()
+
+        return {
+            "data": valid_data,
+            "headers": self.headers,
+            "computed_cache": self.computed_cache,
+            "validation_result": validation_result,
+            "original_indices": self.original_indices,
+        }
+
+    def extract_value(self, item, key):
+        return extract_value(item, key)
+
+    def flatten_dict(self, d, parent_key="", sep="."):
+        return flatten_dict(d, parent_key, sep)
+
+    def __repr__(self):
+        data_len = len(self._raw_data) if self._raw_data else 0
+        return f"DataLoader(loaded={data_len} items, format={self.config.export_format})"
+
+
+class ExcelExporter:
+    def __init__(self, config=None):
+        from config_manager import ExportConfig
+        if config is None:
+            self.config = ExportConfig.from_default()
+        elif isinstance(config, dict):
+            self.config = ExportConfig.from_dict(config)
+        else:
+            self.config = config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(config)
+
+    def export(self, data, headers, computed_cache=None, validation_result=None, original_indices=None):
+        output_path = self.config.get_output_path("excel")
+        sheet_name = self.config.sheet_name
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        split_config = self.config.split_config
+        if split_config.get("enabled") and split_config.get("split_field"):
+            return self._export_with_split(
+                data=data,
+                headers=headers,
+                computed_cache=computed_cache,
+                validation_result=validation_result,
+                original_indices=original_indices,
+            )
+
+        return self._export_single_sheet(
+            data=data,
+            headers=headers,
+            output_path=output_path,
+            sheet_name=sheet_name,
+            computed_cache=computed_cache,
+            validation_result=validation_result,
+            original_indices=original_indices,
+        )
+
+    def _export_single_sheet(self, data, headers, output_path, sheet_name, computed_cache=None, validation_result=None, original_indices=None):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = _sanitize_sheet_name(sheet_name)
+
+        progress = ProgressTracker(total=len(data), description="📝 写入Excel", unit="行")
+
+        header_labels = [h["label"] for h in headers]
+        ws.append(header_labels)
+
+        for item in data:
+            if not isinstance(item, dict):
+                progress.update()
+                continue
+            row = []
+            for h_idx, h in enumerate(headers):
+                if computed_cache and h["key"] in computed_cache.get(id(item), {}):
+                    val = computed_cache[id(item)][h["key"]]
+                else:
+                    val = extract_value(item, h["key"])
+                row.append(val)
+                if h_idx == 0:
+                    preview_val = str(val) if val is not None else ""
+                    progress.set_field(h["key"])
+                    progress.set_row_preview(preview_val)
+            ws.append(row)
+            progress.update()
+
+        progress.finish()
+
+        self._apply_styles(ws, headers, data)
+
+        if validation_result and validation_result.marked_rows and original_indices is not None:
+            _apply_validation_marks(ws, validation_result, headers, original_indices)
+
+        ws.freeze_panes = "A2"
+
+        add_pivot_table_to_workbook(wb, data, headers, self.config.to_dict())
+
+        print(f"💾 正在保存文件...")
+        wb.save(output_path)
+        self._print_export_summary(output_path, data, headers, validation_result)
+        return output_path
+
+    def _export_with_split(self, data, headers, computed_cache=None, validation_result=None, original_indices=None):
+        output_path = self.config.get_output_path("excel")
+        sheet_name = self.config.sheet_name
+        split_config = self.config.split_config
+        split_field = split_config["split_field"]
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        groups = split_data_by_field(data, split_field, split_config)
+        total_groups = len(groups)
+
+        print(f"\n按字段 '{split_field}' 拆分为 {total_groups} 个分组:")
+        for gi, g in enumerate(groups):
+            print(f"  [{gi + 1}] {g['name']}: {len(g['data'])} 条数据")
+        print()
+
+        include_all = split_config.get("include_all_sheet", True)
+        total_work_items = len(data) if include_all else 0
+        for g in groups:
+            total_work_items += len(g["data"])
+        if total_work_items == 0:
+            total_work_items = len(data)
+
+        progress = ProgressTracker(total=total_work_items, description="📝 写入Excel", unit="行")
+
+        wb = Workbook()
+        default_ws = wb.active
+        wb.remove(default_ws)
+
+        sheet_name_template = split_config.get("sheet_name_template", "{value}")
+        max_sheet_len = split_config.get("max_sheet_name_length", 31)
+        all_sheet_name = split_config.get("all_sheet_name", "全部数据")
+
+        if include_all:
+            ws_all = wb.create_sheet(_sanitize_sheet_name(all_sheet_name, max_sheet_len))
+            self._write_sheet(
+                ws_all, data, headers,
+                original_indices=original_indices,
+                validation_result=validation_result,
+                computed_cache=computed_cache,
+                progress=progress,
+            )
+
+        used_names = set()
+        for gi, group in enumerate(groups, start=1):
+            raw_name = _render_sheet_name(
+                sheet_name_template,
+                group["name"],
+                gi,
+                total_groups,
+                split_config.get("empty_value_label", "未分类"),
+            )
+            safe_name = self._get_unique_sheet_name(raw_name, used_names, max_sheet_len)
+            used_names.add(safe_name)
+
+            ws = wb.create_sheet(safe_name)
+
+            group_orig_indices = None
+            if original_indices is not None:
+                group_orig_indices = [original_indices[i] for i in group["original_indices"]]
+
+            self._write_sheet(
+                ws, group["data"], headers,
+                original_indices=group_orig_indices,
+                validation_result=validation_result,
+                computed_cache=computed_cache,
+                progress=progress,
+            )
+
+        if len(wb.sheetnames) == 0:
+            ws = wb.create_sheet(_sanitize_sheet_name(sheet_name, max_sheet_len))
+            self._write_sheet(ws, data, headers, computed_cache=computed_cache, progress=progress)
+
+        progress.finish()
+
+        add_pivot_table_to_workbook(wb, data, headers, self.config.to_dict())
+
+        wb.save(output_path)
+        self._print_export_summary(output_path, data, headers, validation_result, len(wb.sheetnames))
+        return output_path
+
+    def _get_unique_sheet_name(self, base_name, used_names, max_len=31):
+        safe_name = _sanitize_sheet_name(base_name, max_len)
+        result = safe_name
+        suffix = 1
+        while result in used_names:
+            suffix += 1
+            extra = f"_{suffix}"
+            if len(safe_name) + len(extra) > max_len:
+                result = safe_name[: max_len - len(extra)] + extra
+            else:
+                result = safe_name + extra
+        return result
+
+    def _write_sheet(self, ws, data, headers, original_indices=None, validation_result=None, computed_cache=None, progress=None, progress_step=1):
+        _write_sheet_data(
+            ws, data, headers, self.config.to_dict(),
+            original_indices=original_indices,
+            validation_result=validation_result,
+            computed_cache=computed_cache,
+            progress=progress,
+            progress_step=progress_step,
+        )
+
+    def _apply_styles(self, ws, headers, data):
+        set_column_widths(ws, headers)
+
+        if self.config.get("style_header", True):
+            header_cells = ws[1]
+            apply_header_style(ws, header_cells, self.config.to_dict())
+
+        apply_data_style(ws, headers, len(data), self.config.to_dict())
+        apply_conditional_formatting(ws, headers, data, self.config.to_dict())
+
+    def _print_export_summary(self, output_path, data, headers, validation_result=None, sheet_count=1):
+        print(f"Excel文件已成功导出: {os.path.abspath(output_path)}")
+        if sheet_count > 1:
+            print(f"共 {sheet_count} 个工作表，", end="")
+        if validation_result:
+            skipped_count = len(validation_result.skipped_rows)
+            marked_count = len(validation_result.marked_rows)
+            print(f"共导出 {len(data)} 条数据，{len(headers)} 个字段", end="")
+            if skipped_count > 0:
+                print(f"，跳过 {skipped_count} 条", end="")
+            if marked_count > 0:
+                print(f"，标记 {marked_count} 条", end="")
+            print()
+        else:
+            print(f"共导出 {len(data)} 条数据，{len(headers)} 个字段")
+
+    def export_from_loader(self, loader):
+        prepared = loader.prepare_for_export()
+        if prepared is None:
+            return None
+        return self.export(
+            data=prepared["data"],
+            headers=prepared["headers"],
+            computed_cache=prepared["computed_cache"],
+            validation_result=prepared["validation_result"],
+            original_indices=prepared["original_indices"],
+        )
+
+    def __repr__(self):
+        return f"ExcelExporter(format=excel, output={self.config.get_output_path('excel')})"
+
+
 if __name__ == "__main__":
     main()

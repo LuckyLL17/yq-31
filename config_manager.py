@@ -1,6 +1,7 @@
 import json
 import os
 import copy
+from typing import Any, Dict, List, Optional, Union
 
 
 DEFAULT_CONFIG = {
@@ -118,6 +119,249 @@ DEFAULT_CONFIG = {
 
 CONFIG_FILE_PATH = "./config.json"
 
+VALID_FORMATS = {"excel", "csv", "tsv", "html", "markdown", "json", "pdf"}
+
+
+class ExportConfig:
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self._config = copy.deepcopy(config) if config else get_default_config()
+
+    @classmethod
+    def from_default(cls) -> "ExportConfig":
+        return cls()
+
+    @classmethod
+    def from_file(cls, config_path: Optional[str] = None) -> "ExportConfig":
+        return cls(load_config(config_path))
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> "ExportConfig":
+        return cls(merge_config(get_default_config(), config_dict))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return copy.deepcopy(self._config)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._config.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self._config[key] = value
+
+    def get_nested(self, *keys: str, default: Any = None) -> Any:
+        current = self._config
+        for key in keys:
+            if isinstance(current, dict) and key in current:
+                current = current[key]
+            else:
+                return default
+        return current
+
+    def set_nested(self, value: Any, *keys: str) -> None:
+        current = self._config
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current[key], dict):
+                current[key] = {}
+            current = current[key]
+        current[keys[-1]] = value
+
+    @property
+    def json_file_path(self) -> str:
+        return self._config.get("json_file_path", "")
+
+    @json_file_path.setter
+    def json_file_path(self, value: str) -> None:
+        self._config["json_file_path"] = value
+
+    @property
+    def export_format(self) -> str:
+        return self._config.get("export_format", "excel")
+
+    @export_format.setter
+    def export_format(self, value: str) -> None:
+        if value not in VALID_FORMATS:
+            raise ValueError(f"无效的导出格式: {value}")
+        self._config["export_format"] = value
+
+    def get_output_path(self, fmt: Optional[str] = None) -> str:
+        format_to_use = fmt or self.export_format
+        if format_to_use == "excel":
+            return self._config.get("excel_output_path", "./output/result.xlsx")
+        return self._config.get(f"{format_to_use}_output_path", f"./output/result.{format_to_use}")
+
+    def set_output_path(self, path: str, fmt: Optional[str] = None) -> None:
+        format_to_use = fmt or self.export_format
+        if format_to_use == "excel":
+            self._config["excel_output_path"] = path
+        else:
+            self._config[f"{format_to_use}_output_path"] = path
+
+    @property
+    def default_headers(self) -> List[Dict[str, Any]]:
+        return self._config.get("default_headers", [])
+
+    @default_headers.setter
+    def default_headers(self, headers: List[Dict[str, Any]]) -> None:
+        self._config["default_headers"] = headers
+
+    @property
+    def sheet_name(self) -> str:
+        return self._config.get("sheet_name", "数据导出")
+
+    @sheet_name.setter
+    def sheet_name(self, value: str) -> None:
+        self._config["sheet_name"] = value
+
+    @property
+    def auto_detect_headers(self) -> bool:
+        return self._config.get("auto_detect_headers", True)
+
+    @auto_detect_headers.setter
+    def auto_detect_headers(self, value: bool) -> None:
+        self._config["auto_detect_headers"] = value
+
+    @property
+    def computed_columns(self) -> List[Dict[str, Any]]:
+        return self._config.get("computed_columns", [])
+
+    @computed_columns.setter
+    def computed_columns(self, value: List[Dict[str, Any]]) -> None:
+        self._config["computed_columns"] = value
+
+    @property
+    def validation_rules(self) -> List[Dict[str, Any]]:
+        return self._config.get("validation_rules", [])
+
+    @validation_rules.setter
+    def validation_rules(self, value: List[Dict[str, Any]]) -> None:
+        self._config["validation_rules"] = value
+
+    @property
+    def conditional_format_rules(self) -> List[Dict[str, Any]]:
+        return self._config.get("conditional_format_rules", [])
+
+    @conditional_format_rules.setter
+    def conditional_format_rules(self, value: List[Dict[str, Any]]) -> None:
+        self._config["conditional_format_rules"] = value
+
+    @property
+    def split_config(self) -> Dict[str, Any]:
+        return self._config.get("split_config", {})
+
+    @split_config.setter
+    def split_config(self, value: Dict[str, Any]) -> None:
+        self._config["split_config"] = value
+
+    @property
+    def pivot_config(self) -> Dict[str, Any]:
+        return self._config.get("pivot_config", {})
+
+    @pivot_config.setter
+    def pivot_config(self, value: Dict[str, Any]) -> None:
+        self._config["pivot_config"] = value
+
+    @property
+    def header_style(self) -> Dict[str, Any]:
+        return self._config.get("header_style", {})
+
+    @header_style.setter
+    def header_style(self, value: Dict[str, Any]) -> None:
+        self._config["header_style"] = value
+
+    @property
+    def data_style(self) -> Dict[str, Any]:
+        return self._config.get("data_style", {})
+
+    @data_style.setter
+    def data_style(self, value: Dict[str, Any]) -> None:
+        self._config["data_style"] = value
+
+    def get_format_config(self, fmt: str) -> Dict[str, Any]:
+        return self._config.get(f"{fmt}_config", {})
+
+    def set_format_config(self, fmt: str, config: Dict[str, Any]) -> None:
+        self._config[f"{fmt}_config"] = config
+
+    def get_header_by_key(self, key: str) -> Optional[Dict[str, Any]]:
+        for header in self.default_headers:
+            if header.get("key") == key:
+                return header
+        return None
+
+    def update_header_width(self, key: str, width: int) -> bool:
+        header = self.get_header_by_key(key)
+        if header:
+            header["width"] = width
+            return True
+        return False
+
+    def update_header_label(self, key: str, label: str) -> bool:
+        header = self.get_header_by_key(key)
+        if header:
+            header["label"] = label
+            return True
+        return False
+
+    def add_header(self, key: str, label: str, width: int = 15, position: Optional[int] = None) -> Dict[str, Any]:
+        new_header = {"key": key, "label": label, "width": width}
+        headers = self.default_headers
+        if position is None or position >= len(headers):
+            headers.append(new_header)
+        else:
+            headers.insert(max(0, position), new_header)
+        self.default_headers = headers
+        return new_header
+
+    def remove_header(self, key: str) -> bool:
+        headers = self.default_headers
+        for i, header in enumerate(headers):
+            if header.get("key") == key:
+                headers.pop(i)
+                self.default_headers = headers
+                return True
+        return False
+
+    def reorder_headers(self, new_order_keys: List[str]) -> List[Dict[str, Any]]:
+        headers = self.default_headers
+        key_to_header = {h["key"]: h for h in headers}
+        new_headers = []
+        for key in new_order_keys:
+            if key in key_to_header:
+                new_headers.append(key_to_header[key])
+                del key_to_header[key]
+        for header in headers:
+            if header["key"] in key_to_header:
+                new_headers.append(header)
+        self.default_headers = new_headers
+        return new_headers
+
+    def validate(self) -> List[str]:
+        return validate_config(self._config)
+
+    def save(self, config_path: Optional[str] = None) -> str:
+        return save_config(self._config, config_path)
+
+    def merge(self, override_config: Dict[str, Any]) -> None:
+        self._config = merge_config(self._config, override_config)
+
+    def apply_cli_overrides(self, args: Any) -> None:
+        self._config = apply_cli_overrides(self._config, args)
+
+    def apply_template(self, template_id: str) -> tuple[bool, str]:
+        from style_template_manager import apply_template_to_config
+        return apply_template_to_config(self._config, template_id)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._config[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._config[key] = value
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._config
+
+    def __repr__(self) -> str:
+        return f"ExportConfig(format={self.export_format}, input={self.json_file_path})"
+
 
 def get_default_config():
     return copy.deepcopy(DEFAULT_CONFIG)
@@ -168,7 +412,7 @@ def validate_config(config):
         errors.append("JSON文件路径不能为空")
 
     export_format = config.get("export_format", "excel")
-    valid_formats = {"excel", "csv", "tsv", "html", "markdown", "json", "pdf"}
+    valid_formats = VALID_FORMATS
     if export_format not in valid_formats:
         errors.append(f"导出格式无效，应为: {', '.join(sorted(valid_formats))}")
 
@@ -246,8 +490,6 @@ def validate_config(config):
     else:
         from style_template_manager import (
             validate_conditional_rule,
-            CF_RULE_TYPES,
-            CF_STYLE_FIELDS,
         )
         for i, rule in enumerate(conditional_format_rules):
             if not isinstance(rule, dict):
@@ -306,6 +548,22 @@ def validate_config(config):
                     )
 
     return errors
+
+
+def apply_cli_overrides(config, args):
+    from multi_exporter import get_format_extension
+
+    if args.input:
+        config["json_file_path"] = args.input
+    if args.format:
+        config["export_format"] = args.format
+    if args.output:
+        fmt = config.get("export_format", "excel")
+        if fmt == "excel":
+            config["excel_output_path"] = args.output
+        else:
+            config[f"{fmt}_output_path"] = args.output
+    return config
 
 
 def get_header_by_key(config, key):
