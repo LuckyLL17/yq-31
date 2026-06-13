@@ -3,10 +3,114 @@ import os
 import sys
 import copy
 import argparse
+import time
+import shutil
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.comments import Comment
 from datetime import datetime
+
+
+class ProgressTracker:
+    def __init__(self, total, description="处理中", unit="条", bar_width=30, min_interval=0.1):
+        self.total = max(1, total)
+        self.current = 0
+        self.description = description
+        self.unit = unit
+        self.bar_width = bar_width
+        self.min_interval = min_interval
+        self.start_time = time.time()
+        self.last_update_time = 0
+        self.current_field = ""
+        self.current_row_preview = ""
+        self._last_line_len = 0
+
+    def update(self, n=1, field="", row_preview=""):
+        self.current = min(self.total, self.current + n)
+        if field:
+            self.current_field = field
+        if row_preview:
+            self.current_row_preview = row_preview
+        now = time.time()
+        if now - self.last_update_time >= self.min_interval or self.current >= self.total:
+            self._render()
+            self.last_update_time = now
+
+    def set_field(self, field=""):
+        if field:
+            self.current_field = field
+
+    def set_row_preview(self, preview=""):
+        if preview:
+            self.current_row_preview = preview
+
+    def _format_time(self, seconds):
+        if seconds is None or seconds < 0:
+            return "--:--"
+        seconds = int(seconds)
+        if seconds < 60:
+            return f"{seconds}秒"
+        elif seconds < 3600:
+            m, s = divmod(seconds, 60)
+            return f"{m}分{s:02d}秒"
+        else:
+            h, rem = divmod(seconds, 3600)
+            m, s = divmod(rem, 60)
+            return f"{h}时{m:02d}分{s:02d}秒"
+
+    def _render(self):
+        elapsed = time.time() - self.start_time
+        if self.current > 0:
+            rate = self.current / elapsed
+            remaining = (self.total - self.current) / rate if rate > 0 else 0
+        else:
+            rate = 0
+            remaining = None
+
+        percent = self.current / self.total * 100
+        filled = int(self.bar_width * self.current / self.total)
+        bar = "█" * filled + "░" * (self.bar_width - filled)
+
+        line = (
+            f"\r  {self.description} |{bar}| {self.current}/{self.total} {self.unit} "
+            f"({percent:5.1f}%) | 速度: {rate:,.1f} {self.unit}/s "
+            f"| 已用: {self._format_time(elapsed)} | 剩余: {self._format_time(remaining)}"
+        )
+
+        extras = []
+        if self.current_field:
+            field_display = self.current_field
+            if len(field_display) > 20:
+                field_display = field_display[:17] + "..."
+            extras.append(f"字段: {field_display}")
+        if self.current_row_preview:
+            row_disp = str(self.current_row_preview)
+            if len(row_disp) > 25:
+                row_disp = row_disp[:22] + "..."
+            extras.append(f"当前: {row_disp}")
+
+        if extras:
+            line += " | " + " | ".join(extras)
+
+        terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
+        if len(line) > terminal_width:
+            line = line[:terminal_width - 1]
+
+        pad = self._last_line_len - len(line)
+        if pad > 0:
+            line += " " * pad
+        self._last_line_len = len(line)
+
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+    def finish(self, message=""):
+        self.current = self.total
+        self._render()
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        if message:
+            print(message)
 
 from config_manager import (
     load_config,
@@ -444,20 +548,30 @@ def split_data_by_field(data, split_field, split_config):
     return groups
 
 
-def _write_sheet_data(ws, data, headers, config, original_indices=None, validation_result=None, computed_cache=None):
+def _write_sheet_data(ws, data, headers, config, original_indices=None, validation_result=None, computed_cache=None, progress=None, progress_step=1):
     header_labels = [h["label"] for h in headers]
     ws.append(header_labels)
 
-    for item in data:
+    for idx, item in enumerate(data):
         if not isinstance(item, dict):
+            if progress:
+                progress.update(progress_step)
             continue
         row = []
-        for h in headers:
+        for h_idx, h in enumerate(headers):
+            current_field = h["key"] if h_idx < len(headers) else ""
             if computed_cache and h["key"] in computed_cache.get(id(item), {}):
-                row.append(computed_cache[id(item)][h["key"]])
+                val = computed_cache[id(item)][h["key"]]
             else:
-                row.append(extract_value(item, h["key"]))
+                val = extract_value(item, h["key"])
+            row.append(val)
+            if progress and h_idx == 0:
+                preview_val = str(val) if val is not None else ""
+                progress.set_field(current_field)
+                progress.set_row_preview(preview_val)
         ws.append(row)
+        if progress:
+            progress.update(progress_step)
 
     set_column_widths(ws, headers)
 
@@ -493,13 +607,21 @@ def export_to_excel_with_split(data, headers, config, validation_result=None, or
         print(f"  [{gi + 1}] {g['name']}: {len(g['data'])} 条数据")
     print()
 
+    include_all = split_config.get("include_all_sheet", True)
+    total_work_items = len(data) if include_all else 0
+    for g in groups:
+        total_work_items += len(g["data"])
+    if total_work_items == 0:
+        total_work_items = len(data)
+
+    progress = ProgressTracker(total=total_work_items, description="📝 写入Excel", unit="行")
+
     wb = Workbook()
     default_ws = wb.active
     wb.remove(default_ws)
 
     sheet_name_template = split_config.get("sheet_name_template", "{value}")
     max_sheet_len = split_config.get("max_sheet_name_length", 31)
-    include_all = split_config.get("include_all_sheet", True)
     all_sheet_name = split_config.get("all_sheet_name", "全部数据")
 
     if include_all:
@@ -512,6 +634,7 @@ def export_to_excel_with_split(data, headers, config, validation_result=None, or
             original_indices=original_indices,
             validation_result=validation_result,
             computed_cache=computed_cache,
+            progress=progress,
         )
 
     used_names = set()
@@ -551,11 +674,14 @@ def export_to_excel_with_split(data, headers, config, validation_result=None, or
             original_indices=group_orig_indices,
             validation_result=validation_result,
             computed_cache=computed_cache,
+            progress=progress,
         )
 
     if len(wb.sheetnames) == 0:
         ws = wb.create_sheet(_sanitize_sheet_name(sheet_name, max_sheet_len))
-        _write_sheet_data(ws, data, headers, config, computed_cache=computed_cache)
+        _write_sheet_data(ws, data, headers, config, computed_cache=computed_cache, progress=progress)
+
+    progress.finish()
 
     add_pivot_table_to_workbook(wb, data, headers, config)
 
@@ -637,19 +763,30 @@ def export_to_excel(data, headers, config):
     ws = wb.active
     ws.title = sheet_name
 
+    progress = ProgressTracker(total=len(data), description="📝 写入Excel", unit="行")
+
     header_labels = [h["label"] for h in headers]
     ws.append(header_labels)
 
     for item in data:
         if not isinstance(item, dict):
+            progress.update()
             continue
         row = []
-        for h in headers:
+        for h_idx, h in enumerate(headers):
             if computed_cache and h["key"] in computed_cache.get(id(item), {}):
-                row.append(computed_cache[id(item)][h["key"]])
+                val = computed_cache[id(item)][h["key"]]
             else:
-                row.append(extract_value(item, h["key"]))
+                val = extract_value(item, h["key"])
+            row.append(val)
+            if h_idx == 0:
+                preview_val = str(val) if val is not None else ""
+                progress.set_field(h["key"])
+                progress.set_row_preview(preview_val)
         ws.append(row)
+        progress.update()
+
+    progress.finish()
 
     set_column_widths(ws, headers)
 
@@ -668,6 +805,7 @@ def export_to_excel(data, headers, config):
 
     add_pivot_table_to_workbook(wb, data, headers, config)
 
+    print(f"💾 正在保存文件...")
     wb.save(output_path)
     print(f"Excel文件已成功导出: {os.path.abspath(output_path)}")
     if validation_result:

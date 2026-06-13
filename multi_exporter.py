@@ -5,7 +5,7 @@ import sys
 import html
 from datetime import datetime
 
-from json_to_excel import extract_value, flatten_dict
+from json_to_excel import extract_value, flatten_dict, ProgressTracker
 from computed_columns import apply_computed_columns
 
 
@@ -57,13 +57,15 @@ def get_default_output_path(fmt, base_dir="./output"):
     return os.path.join(base_dir, f"result{ext}")
 
 
-def _prepare_rows(data, headers, computed_cache=None):
+def _prepare_rows(data, headers, computed_cache=None, progress=None, progress_step=1):
     rows = []
     for item in data:
         if not isinstance(item, dict):
+            if progress:
+                progress.update(progress_step)
             continue
         row = []
-        for h in headers:
+        for h_idx, h in enumerate(headers):
             if computed_cache and h["key"] in computed_cache.get(id(item), {}):
                 val = computed_cache[id(item)][h["key"]]
             else:
@@ -71,7 +73,13 @@ def _prepare_rows(data, headers, computed_cache=None):
             if val is None:
                 val = ""
             row.append(val)
+            if progress and h_idx == 0:
+                preview_val = str(val) if val is not None else ""
+                progress.set_field(h["key"])
+                progress.set_row_preview(preview_val)
         rows.append(row)
+        if progress:
+            progress.update(progress_step)
     return rows
 
 
@@ -95,7 +103,9 @@ def export_to_csv(data, headers, config, computed_cache=None):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    rows = _prepare_rows(data, headers, computed_cache=computed_cache)
+    progress = ProgressTracker(total=len(data), description="📝 导出CSV", unit="行")
+    rows = _prepare_rows(data, headers, computed_cache=computed_cache, progress=progress)
+    progress.finish()
 
     with open(output_path, "w", encoding=encoding, newline="") as f:
         writer = csv.writer(
@@ -123,7 +133,9 @@ def export_to_tsv(data, headers, config, computed_cache=None):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    rows = _prepare_rows(data, headers, computed_cache=computed_cache)
+    progress = ProgressTracker(total=len(data), description="📝 导出TSV", unit="行")
+    rows = _prepare_rows(data, headers, computed_cache=computed_cache, progress=progress)
+    progress.finish()
 
     with open(output_path, "w", encoding=encoding, newline="") as f:
         writer = csv.writer(f, delimiter="\t", quotechar='"', quoting=csv.QUOTE_MINIMAL)
@@ -147,26 +159,40 @@ def export_to_json(data, headers, config, computed_cache=None):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
+    progress = ProgressTracker(total=len(data), description="📝 导出JSON", unit="行")
     export_data_list = []
     for item in data:
         if not isinstance(item, dict):
+            progress.update()
             continue
         if include_labels:
             row_obj = {}
-            for h in headers:
+            for h_idx, h in enumerate(headers):
                 if computed_cache and h["key"] in computed_cache.get(id(item), {}):
-                    row_obj[h["label"]] = computed_cache[id(item)][h["key"]]
+                    val = computed_cache[id(item)][h["key"]]
                 else:
-                    row_obj[h["label"]] = extract_value(item, h["key"])
+                    val = extract_value(item, h["key"])
+                row_obj[h["label"]] = val
+                if h_idx == 0:
+                    preview_val = str(val) if val is not None else ""
+                    progress.set_field(h["key"])
+                    progress.set_row_preview(preview_val)
             export_data_list.append(row_obj)
         else:
             row_obj = {}
-            for h in headers:
+            for h_idx, h in enumerate(headers):
                 if computed_cache and h["key"] in computed_cache.get(id(item), {}):
-                    row_obj[h["key"]] = computed_cache[id(item)][h["key"]]
+                    val = computed_cache[id(item)][h["key"]]
                 else:
-                    row_obj[h["key"]] = extract_value(item, h["key"])
+                    val = extract_value(item, h["key"])
+                row_obj[h["key"]] = val
+                if h_idx == 0:
+                    preview_val = str(val) if val is not None else ""
+                    progress.set_field(h["key"])
+                    progress.set_row_preview(preview_val)
             export_data_list.append(row_obj)
+        progress.update()
+    progress.finish()
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(export_data_list, f, ensure_ascii=ensure_ascii, indent=indent if indent > 0 else None)
@@ -187,7 +213,9 @@ def export_to_markdown(data, headers, config, computed_cache=None):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    rows = _prepare_rows(data, headers, computed_cache=computed_cache)
+    progress = ProgressTracker(total=len(data), description="📝 导出Markdown", unit="行")
+    rows = _prepare_rows(data, headers, computed_cache=computed_cache, progress=progress)
+    progress.finish()
 
     def _truncate(s, width):
         s = str(s)
@@ -242,7 +270,9 @@ def export_to_html(data, headers, config, computed_cache=None):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    rows = _prepare_rows(data, headers, computed_cache=computed_cache)
+    progress = ProgressTracker(total=len(data), description="📝 导出HTML", unit="行")
+    rows = _prepare_rows(data, headers, computed_cache=computed_cache, progress=progress)
+    progress.finish()
 
     default_css = """
     <style>
@@ -346,7 +376,9 @@ def export_to_pdf(data, headers, config, computed_cache=None):
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    rows = _prepare_rows(data, headers, computed_cache=computed_cache)
+    progress = ProgressTracker(total=len(data), description="📝 导出PDF", unit="行")
+    rows = _prepare_rows(data, headers, computed_cache=computed_cache, progress=progress)
+    progress.finish()
 
     try:
         from reportlab.lib import colors
